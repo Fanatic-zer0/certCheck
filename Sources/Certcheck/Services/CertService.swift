@@ -43,6 +43,9 @@ class CertService {
 
         // Version
         let version = extractVersion(cert)
+
+        let isCA = extensions.contains { $0.name.contains("Basic Constraints") && $0.value.contains("CA:TRUE") }
+        let selfSigned = dnToString(subject) == dnToString(issuer)
         
         return CertInfo(
             subject: subject,
@@ -55,7 +58,9 @@ class CertService {
             publicKey: publicKey,
             signatureAlg: sigAlg,
             version: version,
-            extensions: extensions
+            extensions: extensions,
+            isCA: isCA,
+            selfSigned: selfSigned
         )
     }
     
@@ -597,7 +602,7 @@ class CertService {
         do {
             let info = try parseCertificate(pem: pem)
             let selfSigned = dnToString(info.subject) == dnToString(info.issuer)
-            let isCA = info.extensions.contains { $0.name.contains("Basic Constraints") && $0.value.contains("CA: TRUE") }
+            let isCA = info.extensions.contains { $0.name.contains("Basic Constraints") && $0.value.contains("CA:TRUE") }
             
             return TrustEntry(
                 index: index,

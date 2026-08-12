@@ -7,7 +7,7 @@ set -e
 
 APP_NAME="Certcheck"
 BUNDLE_ID="com.certcheck.app"
-VERSION="1.0.0"
+VERSION="1.0.1"
 ICON_SOURCE="Resources/icon.png"
 
 echo ""

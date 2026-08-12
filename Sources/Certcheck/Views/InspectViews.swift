@@ -13,6 +13,17 @@ struct CertDecodeView: View {
         }
         return date < Date()
     }
+
+    private var daysUntilExpiry: Int? {
+        guard let info = certInfo,
+              let date = ISO8601DateFormatter().date(from: info.notAfter) else { return nil }
+        return Calendar.current.dateComponents([.day], from: Date(), to: date).day
+    }
+
+    private var expiryDate: Date? {
+        guard let info = certInfo else { return nil }
+        return ISO8601DateFormatter().date(from: info.notAfter)
+    }
     
     var body: some View {
         ScrollView {
@@ -56,6 +67,14 @@ struct CertDecodeView: View {
                             Capsule()
                                 .fill(isExpired ? Color.red.opacity(0.12) : Color.green.opacity(0.12))
                         )
+
+                        if let info = certInfo, info.certType != .leaf {
+                            certTypeBadge(info.certType)
+                        }
+
+                        if let days = daysUntilExpiry, let expiry = expiryDate {
+                            expiryBadge(daysRemaining: days, expiryDate: expiry)
+                        }
                     }
                 }
                 
@@ -160,6 +179,64 @@ struct CertDecodeView: View {
                 )
             }
         }
+    }
+
+    @ViewBuilder
+    private func expiryBadge(daysRemaining: Int, expiryDate: Date) -> some View {
+        let color: Color = {
+            if daysRemaining < 0  { return .red }
+            if daysRemaining <= 7  { return .red }
+            if daysRemaining <= 30 { return .orange }
+            return .green
+        }()
+        let localTime: String = {
+            let f = DateFormatter()
+            f.dateStyle = .medium
+            f.timeStyle = .short
+            f.timeZone = .current
+            return f.string(from: expiryDate)
+        }()
+        let label: String = {
+            if daysRemaining < 0  { return "Expired \(abs(daysRemaining))d ago" }
+            if daysRemaining == 0 { return "Expires today" }
+            return "Expires in \(daysRemaining)d"
+        }()
+        HStack(spacing: 4) {
+            Image(systemName: "calendar.badge.clock")
+                .foregroundColor(color)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(label)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(color)
+                Text(localTime)
+                    .font(.system(size: 9))
+                    .foregroundColor(color.opacity(0.8))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Capsule().fill(color.opacity(0.12)))
+    }
+
+    @ViewBuilder
+    private func certTypeBadge(_ certType: CertInfo.CertType) -> some View {
+        let (color, icon): (Color, String) = {
+            switch certType {
+            case .rootCA:         return (.purple, certType.icon)
+            case .intermediateCA: return (.orange, certType.icon)
+            case .leaf:           return (.blue,   certType.icon)
+            }
+        }()
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .foregroundColor(color)
+            Text(certType.label)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(color)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(color.opacity(0.12)))
     }
     
     private func parseCert() {

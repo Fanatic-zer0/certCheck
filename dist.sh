@@ -4,7 +4,7 @@ set -e
 APP_NAME="Certcheck"
 DMG_NAME="${APP_NAME}.dmg"
 STAGING="dist_staging"
-VERSION=$(date +"%Y%m%d")
+VERSION=1.0.1
 
 echo "╔══════════════════════════════════════╗"
 echo "║   Certcheck — Distribution Builder   ║"
