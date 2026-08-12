@@ -32,6 +32,15 @@ jobs:
           echo "tag=$TAG"     >> "$GITHUB_OUTPUT"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
+      # create + push the tag when triggered manually (no tag exists on the ref)
+      - name: Create tag (manual run only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
       # ── 3. Build Swift release binary ────────────────────────────────────────
       - name: Build
         run: swift build -c release
@@ -183,6 +192,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           name: "Certcheck ${{ steps.version.outputs.tag }}"
           body: |
             ## Certcheck — Native macOS Certificate Toolkit
