@@ -32,6 +32,32 @@ struct CertInfo {
     var signatureAlg: String
     var version: Int
     var extensions: [CertExtension]
+    var isCA: Bool
+    var selfSigned: Bool
+
+    enum CertType {
+        case rootCA, intermediateCA, leaf
+        var label: String {
+            switch self {
+            case .rootCA:         return "Root CA"
+            case .intermediateCA: return "Intermediate CA"
+            case .leaf:           return "Leaf"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .rootCA:         return "crown.fill"
+            case .intermediateCA: return "link"
+            case .leaf:           return "doc.badge.ellipsis"
+            }
+        }
+    }
+
+    var certType: CertType {
+        if isCA && selfSigned  { return .rootCA }
+        if isCA && !selfSigned { return .intermediateCA }
+        return .leaf
+    }
 }
 
 struct CSRInfo {
