@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag (e.g. v1.0.0)'
+        required: true
+        type: string
 
 permissions:
   contents: write   # needed to create GitHub Releases
@@ -21,9 +27,9 @@ jobs:
       - name: Set version
         id: version
         run: |
-          TAG="${GITHUB_REF_NAME}"           # e.g. v1.2.3
-          VER="${TAG#v}"                      # strip leading 'v'
-          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VER="${TAG#v}"
+          echo "tag=$TAG"     >> "$GITHUB_OUTPUT"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
       # ── 3. Build Swift release binary ────────────────────────────────────────
@@ -179,19 +185,49 @@ jobs:
         with:
           name: "Certcheck ${{ steps.version.outputs.tag }}"
           body: |
-            ## Certcheck ${{ steps.version.outputs.tag }}
+            ## Certcheck — Native macOS Certificate Toolkit
+
+            A native macOS app for inspecting, verifying, and generating X.509 certificates — no browser, no web service, everything runs locally.
+
+            ### Features
+            **Inspect**
+            - Decode X.509 certificates (subject, issuer, serial, validity, fingerprints, extensions, SANs)
+            - Decode Certificate Signing Requests (CSR) with signature verification
+            - Identifies Root CA / Intermediate CA certificates automatically
+
+            **Verify**
+            - Match a certificate against its private key
+            - Verify a certificate was issued from a CSR
+            - Match a CSR against its private key
+            - Validate full certificate chains (leaf → intermediate → root)
+
+            **Stores**
+            - Parse and inspect PEM CA bundles / truststores
+            - Inspect JKS, JCEKS, and PKCS#12 (.p12 / .pfx) keystores
+
+            **Generate**
+            - Create CSRs with RSA / ECDSA / Ed25519 keys
+            - Generate self-signed, root CA, intermediate CA, and CA-signed certificates
+            - Bundle certificates, keys, and chains into PKCS#12 files
+
+            ---
 
             ### Install
-            Download the **DMG**, open it, and drag **Certcheck.app** to Applications.
+            1. Download **Certcheck-${{ steps.version.outputs.tag }}.dmg**
+            2. Open the DMG and drag **Certcheck.app** to Applications
 
-            ### First launch (Gatekeeper workaround)
-            This release is self-signed. Run this once in Terminal after installing:
+            ### First launch
+            This release is self-signed (not notarised). Run this once in Terminal after installing:
             ```
             xattr -rd com.apple.quarantine /Applications/Certcheck.app
             ```
-            Or right-click the app → **Open** → **Open** to bypass the security prompt.
+            Or right-click the app → **Open** → **Open** to bypass the Gatekeeper prompt.
 
-            ### Files
+            ### Requirements
+            macOS 13 Ventura or later
+
+            ---
+
             | File | Description |
             |------|-------------|
             | `Certcheck-${{ steps.version.outputs.tag }}.dmg` | Installer disk image (recommended) |
