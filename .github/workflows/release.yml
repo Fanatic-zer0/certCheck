@@ -1,0 +1,205 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # needed to create GitHub Releases
+
+jobs:
+  build-and-release:
+    runs-on: macos-15   # Apple Silicon runner; has Swift 5.10+ and Xcode 16
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Resolve version from tag ──────────────────────────────────────────
+      - name: Set version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"           # e.g. v1.2.3
+          VER="${TAG#v}"                      # strip leading 'v'
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Build Swift release binary ────────────────────────────────────────
+      - name: Build
+        run: swift build -c release
+
+      # ── 4. Assemble .app bundle ───────────────────────────────────────────────
+      - name: Assemble app bundle
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          APP="Certcheck.app"
+          CONTENTS="$APP/Contents"
+          MACOS="$CONTENTS/MacOS"
+          RESOURCES="$CONTENTS/Resources"
+
+          rm -rf "$APP"
+          mkdir -p "$MACOS" "$RESOURCES"
+
+          cp .build/release/Certcheck "$MACOS/Certcheck"
+          chmod +x "$MACOS/Certcheck"
+
+          # Info.plist — inject version from tag
+          cat > "$CONTENTS/Info.plist" << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key>
+              <string>en</string>
+              <key>CFBundleExecutable</key>
+              <string>Certcheck</string>
+              <key>CFBundleIconFile</key>
+              <string>AppIcon</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.certcheck.app</string>
+              <key>CFBundleInfoDictionaryVersion</key>
+              <string>6.0</string>
+              <key>CFBundleName</key>
+              <string>Certcheck</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${VERSION}</string>
+              <key>CFBundleVersion</key>
+              <string>${VERSION}</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>13.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>NSHumanReadableCopyright</key>
+              <string>Copyright © 2026 Certcheck. All rights reserved.</string>
+          </dict>
+          </plist>
+          PLIST
+
+          # App icon
+          if [ -f "Resources/icon.png" ]; then
+            ICONSET="$RESOURCES/AppIcon.iconset"
+            mkdir -p "$ICONSET"
+            for size in 16 32 64 128 256 512 1024; do
+              sips -z $size $size "Resources/icon.png" --out "$ICONSET/icon_${size}x${size}.png" > /dev/null 2>&1
+            done
+            sips -z 32   32   "Resources/icon.png" --out "$ICONSET/icon_16x16@2x.png"  > /dev/null 2>&1
+            sips -z 64   64   "Resources/icon.png" --out "$ICONSET/icon_32x32@2x.png"  > /dev/null 2>&1
+            sips -z 256  256  "Resources/icon.png" --out "$ICONSET/icon_128x128@2x.png"> /dev/null 2>&1
+            sips -z 512  512  "Resources/icon.png" --out "$ICONSET/icon_256x256@2x.png"> /dev/null 2>&1
+            sips -z 1024 1024 "Resources/icon.png" --out "$ICONSET/icon_512x512@2x.png"> /dev/null 2>&1
+            iconutil -c icns "$ICONSET" -o "$RESOURCES/AppIcon.icns"
+            rm -rf "$ICONSET"
+          fi
+
+      # ── 5. Ad-hoc code sign ───────────────────────────────────────────────────
+      # Without this step, macOS shows "damaged and can't be opened".
+      # Ad-hoc signing (-) produces "unidentified developer" instead,
+      # which users can bypass with right-click → Open once.
+      - name: Ad-hoc code sign
+        run: |
+          codesign \
+            --force \
+            --deep \
+            --sign - \
+            Certcheck.app
+
+          # Verify the signature is intact before packaging
+          codesign --verify --deep --strict Certcheck.app
+          echo "Code signature: OK"
+
+      # ── 6. Package as DMG ────────────────────────────────────────────────────
+      - name: Create DMG
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          STAGING="dist_staging"
+          DMG="Certcheck-${TAG}.dmg"
+
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING"
+
+          # Use ditto to preserve extended attributes and resource forks
+          ditto Certcheck.app "$STAGING/Certcheck.app"
+          ln -sf /Applications "$STAGING/Applications"
+
+          cat > "$STAGING/README – First Launch.txt" << 'README'
+          Certcheck – How to open on macOS
+          ═════════════════════════════════
+
+          This app is self-signed (not notarised). macOS will warn about an
+          unidentified developer. To open it:
+
+            Option A – one-time Terminal command (recommended):
+              xattr -rd com.apple.quarantine /Applications/Certcheck.app
+
+            Option B – right-click method:
+              1. Right-click Certcheck.app → Open
+              2. Click "Open" in the security dialog
+              (Only needed once — macOS remembers your choice.)
+
+            Option C – System Settings:
+              After a blocked launch, go to
+              System Settings → Privacy & Security → scroll down → Open Anyway
+          README
+
+          hdiutil create \
+            -volname "Certcheck" \
+            -srcfolder "$STAGING" \
+            -ov \
+            -format UDZO \
+            -o "$DMG" \
+            > /dev/null
+
+          rm -rf "$STAGING"
+          echo "DMG_NAME=$DMG" >> "$GITHUB_ENV"
+
+      # ── 7. Package as ZIP (ditto preserves .app structure) ───────────────────
+      - name: Create ZIP
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          ZIP="Certcheck-${TAG}.zip"
+          ditto -c -k --keepParent Certcheck.app "$ZIP"
+          echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
+
+      # ── 8. Checksums ─────────────────────────────────────────────────────────
+      - name: Generate checksums
+        run: |
+          shasum -a 256 "$DMG_NAME" "$ZIP_NAME" > checksums.txt
+          cat checksums.txt
+
+      # ── 9. Create GitHub Release ─────────────────────────────────────────────
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Certcheck ${{ steps.version.outputs.tag }}"
+          body: |
+            ## Certcheck ${{ steps.version.outputs.tag }}
+
+            ### Install
+            Download the **DMG**, open it, and drag **Certcheck.app** to Applications.
+
+            ### First launch (Gatekeeper workaround)
+            This release is self-signed. Run this once in Terminal after installing:
+            ```
+            xattr -rd com.apple.quarantine /Applications/Certcheck.app
+            ```
+            Or right-click the app → **Open** → **Open** to bypass the security prompt.
+
+            ### Files
+            | File | Description |
+            |------|-------------|
+            | `Certcheck-${{ steps.version.outputs.tag }}.dmg` | Installer disk image (recommended) |
+            | `Certcheck-${{ steps.version.outputs.tag }}.zip` | Plain ZIP of the .app bundle |
+            | `checksums.txt` | SHA-256 checksums |
+          files: |
+            ${{ env.DMG_NAME }}
+            ${{ env.ZIP_NAME }}
+            checksums.txt
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
