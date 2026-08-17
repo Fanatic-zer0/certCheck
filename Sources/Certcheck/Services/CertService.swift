@@ -26,7 +26,7 @@ class CertService {
         
         // Use OpenSSL for all extension parsing — Security.framework returns raw OIDs and numbers
         let opensslResult = (try? OpenSSLHelper.shared.parseAllExtensions(pem)) ?? ([], [], "Unknown")
-        var extensions = opensslResult.0
+        let extensions = opensslResult.0
         var san = opensslResult.1
         let sigAlgOpenSSL = opensslResult.2
 
@@ -140,6 +140,54 @@ class CertService {
         
         return pemList.enumerated().map { index, certPEM in
             parseTrustEntry(pem: certPEM, index: index, alias: nil)
+        }
+    }
+
+    /// Checks one or more certificates against a CA bundle / truststore, matching by SHA-256
+    /// fingerprint (exact match) and falling back to subject DN (same subject, different content).
+    func checkBundleMembership(certsPEM: String, bundlePEM: String) throws -> [BundleMembershipResult] {
+        let certPEMs = try splitPEMCerts(certsPEM)
+        guard !certPEMs.isEmpty else { throw CertError.noCertificates }
+        let bundlePEMs = try splitPEMCerts(bundlePEM)
+        guard !bundlePEMs.isEmpty else { throw CertError.noCertificates }
+
+        let bundleEntries: [(index: Int, info: CertInfo)] = bundlePEMs.enumerated().compactMap { index, pem in
+            guard let info = try? parseCertificate(pem: pem) else { return nil }
+            return (index, info)
+        }
+
+        return certPEMs.enumerated().map { index, pem in
+            do {
+                let info = try parseCertificate(pem: pem)
+                let sha = info.fingerprints.sha256
+                let subjectStr = dnToString(info.subject)
+
+                if let exact = bundleEntries.first(where: { $0.info.fingerprints.sha256 == sha }) {
+                    return BundleMembershipResult(
+                        index: index, subject: info.subject, issuer: info.issuer, serial: info.serial,
+                        isCA: info.isCA, fingerprintSHA256: sha,
+                        matchStatus: .exactMatch, matchedBundleIndex: exact.index, error: nil
+                    )
+                }
+                if let sameSubject = bundleEntries.first(where: { dnToString($0.info.subject) == subjectStr }) {
+                    return BundleMembershipResult(
+                        index: index, subject: info.subject, issuer: info.issuer, serial: info.serial,
+                        isCA: info.isCA, fingerprintSHA256: sha,
+                        matchStatus: .sameSubjectDifferentCert, matchedBundleIndex: sameSubject.index, error: nil
+                    )
+                }
+                return BundleMembershipResult(
+                    index: index, subject: info.subject, issuer: info.issuer, serial: info.serial,
+                    isCA: info.isCA, fingerprintSHA256: sha,
+                    matchStatus: .notFound, matchedBundleIndex: nil, error: nil
+                )
+            } catch {
+                return BundleMembershipResult(
+                    index: index, subject: [], issuer: [], serial: "",
+                    isCA: false, fingerprintSHA256: "",
+                    matchStatus: .notFound, matchedBundleIndex: nil, error: error.localizedDescription
+                )
+            }
         }
     }
     
