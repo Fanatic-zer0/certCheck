@@ -101,6 +101,35 @@ struct ChainLink: Identifiable {
     var signatureOk: Bool?
 }
 
+// MARK: - Bundle Membership Check
+
+struct BundleMembershipResult: Identifiable {
+    enum MatchStatus {
+        case exactMatch              // byte-identical to an entry already in the bundle
+        case sameSubjectDifferentCert // same subject DN present, but fingerprint differs (e.g. renewed/reissued)
+        case notFound                 // no entry with the same subject or fingerprint
+
+        var label: String {
+            switch self {
+            case .exactMatch:              return "Already in bundle"
+            case .sameSubjectDifferentCert: return "Subject exists, different cert"
+            case .notFound:                 return "Not found"
+            }
+        }
+    }
+
+    var id: Int { index }
+    var index: Int
+    var subject: OrderedDN
+    var issuer: OrderedDN
+    var serial: String
+    var isCA: Bool
+    var fingerprintSHA256: String
+    var matchStatus: MatchStatus
+    var matchedBundleIndex: Int?
+    var error: String?
+}
+
 struct CSRMatchResult {
     var publicKeyMatch: Bool
     var subjectMatch: Bool
