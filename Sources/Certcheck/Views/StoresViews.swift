@@ -561,3 +561,182 @@ struct BundleEntryDetailSheet: View {
         return f.string(from: d)
     }
 }
+
+// MARK: - Bundle Membership Check
+
+struct BundleCheckView: View {
+    @State private var certsPEM = ""
+    @State private var bundlePEM = ""
+    @State private var results: [BundleMembershipResult] = []
+    @State private var error: String?
+    @State private var isLoading = false
+
+    private var stats: (exact: Int, sameSubject: Int, notFound: Int) {
+        (
+            exact: results.filter { $0.matchStatus == .exactMatch }.count,
+            sameSubject: results.filter { $0.matchStatus == .sameSubjectDifferentCert }.count,
+            notFound: results.filter { $0.matchStatus == .notFound }.count
+        )
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.seal")
+                        .font(.title2)
+                        .foregroundColor(Color(hue: 0.11, saturation: 0.88, brightness: 0.82))
+                    Text("Bundle Membership Check")
+                        .font(.title2.bold())
+                }
+                Text("Check whether one or more certificates are already present in a CA bundle / truststore")
+                    .font(.caption).foregroundColor(.secondary)
+
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        PEMInputField(
+                            label: "Certificate(s) to Check",
+                            placeholder: "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+                            text: $certsPEM
+                        )
+                        Button("Load File…") { loadFile(into: $certsPEM) }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        PEMInputField(
+                            label: "CA Bundle / Truststore",
+                            placeholder: "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+                            text: $bundlePEM
+                        )
+                        Button("Load File…") { loadFile(into: $bundlePEM) }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
+
+                HStack(spacing: 12) {
+                    ActionButton(
+                        title: isLoading ? "Checking…" : "Check Membership",
+                        icon: "magnifyingglass",
+                        action: check,
+                        disabled: isLoading ||
+                            certsPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                            bundlePEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                    if !results.isEmpty {
+                        Button("Clear") { results = []; error = nil }.buttonStyle(.bordered)
+                    }
+                }
+
+                if let error = error { ErrorText(error: error) }
+
+                if !results.isEmpty {
+                    HStack(spacing: 10) {
+                        statBadge("\(stats.exact)", "Already in Bundle", .green)
+                        statBadge("\(stats.sameSubject)", "Subject Match, Diff Cert", .orange)
+                        statBadge("\(stats.notFound)", "Not Found", stats.notFound > 0 ? .red : .secondary)
+                    }
+
+                    VStack(spacing: 0) {
+                        ForEach(results) { result in
+                            resultRow(result)
+                            if result.id != results.last?.id { Divider() }
+                        }
+                    }
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.15), lineWidth: 1))
+                }
+            }
+            .padding()
+        }
+    }
+
+    @ViewBuilder
+    private func resultRow(_ result: BundleMembershipResult) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            statusIcon(result.matchStatus)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(cn(result.subject))
+                    .font(.system(size: 12, weight: .medium))
+                if let err = result.error {
+                    Text(err).font(.system(size: 11)).foregroundColor(.red)
+                } else {
+                    Text(result.matchStatus.label)
+                        .font(.system(size: 11))
+                        .foregroundColor(statusColor(result.matchStatus))
+                    if let idx = result.matchedBundleIndex {
+                        Text("Matches bundle entry #\(idx + 1)")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                    Text("SHA-256: \(result.fingerprintSHA256)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+            Spacer()
+        }
+        .padding(10)
+    }
+
+    @ViewBuilder
+    private func statusIcon(_ status: BundleMembershipResult.MatchStatus) -> some View {
+        switch status {
+        case .exactMatch:
+            Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+        case .sameSubjectDifferentCert:
+            Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+        case .notFound:
+            Image(systemName: "xmark.circle.fill").foregroundColor(.red)
+        }
+    }
+
+    private func statusColor(_ status: BundleMembershipResult.MatchStatus) -> Color {
+        switch status {
+        case .exactMatch:               return .green
+        case .sameSubjectDifferentCert: return .orange
+        case .notFound:                 return .red
+        }
+    }
+
+    @ViewBuilder
+    private func statBadge(_ value: String, _ label: String, _ color: Color) -> some View {
+        VStack(spacing: 2) {
+            Text(value).font(.system(size: 15, weight: .bold)).foregroundColor(color)
+            Text(label).font(.system(size: 9)).foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2), lineWidth: 1))
+    }
+
+    private func cn(_ dn: OrderedDN) -> String {
+        dn.first(where: { $0.key == "CN" })?.value ?? dn.first?.value ?? "—"
+    }
+
+    private func loadFile(into binding: Binding<String>) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.message = "Select a PEM certificate or bundle file"
+        if panel.runModal() == .OK, let url = panel.url, let contents = try? String(contentsOf: url, encoding: .utf8) {
+            binding.wrappedValue = contents
+        }
+    }
+
+    private func check() {
+        error = nil; results = []; isLoading = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let result = try CertService.shared.checkBundleMembership(certsPEM: certsPEM, bundlePEM: bundlePEM)
+                DispatchQueue.main.async { self.results = result; self.isLoading = false }
+            } catch {
+                DispatchQueue.main.async { self.error = error.localizedDescription; self.isLoading = false }
+            }
+        }
+    }
+}
+
+extension BundleMembershipResult.MatchStatus: Equatable {}
