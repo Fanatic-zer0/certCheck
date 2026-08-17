@@ -10,6 +10,7 @@ enum TabID: String, CaseIterable, Identifiable {
     case certDiff    = "cert-diff"
     case chainVerify = "chain"
     case caBundle    = "ca-bundle"
+    case bundleCheck = "bundle-check"
     case keystore    = "keystore"
     case genCSR      = "gen-csr"
     case genCert     = "gen-cert"
@@ -29,6 +30,7 @@ enum TabID: String, CaseIterable, Identifiable {
         case .certDiff:    return "Cert Diff"
         case .chainVerify: return "Chain Verify"
         case .caBundle:    return "CA Bundle"
+        case .bundleCheck: return "Bundle Check"
         case .keystore:    return "Keystore"
         case .genCSR:      return "Generate CSR"
         case .genCert:     return "Generate Cert"
@@ -48,6 +50,7 @@ enum TabID: String, CaseIterable, Identifiable {
         case .certDiff:    return "arrow.left.arrow.right"
         case .chainVerify: return "shield.checkered"
         case .caBundle:    return "books.vertical"
+        case .bundleCheck: return "checkmark.seal"
         case .keystore:    return "cylinder"
         case .genCSR:      return "pencil.and.list.clipboard"
         case .genCert:     return "checkmark.shield.fill"
@@ -60,7 +63,7 @@ enum TabID: String, CaseIterable, Identifiable {
         switch self {
         case .certDecode, .csrDecode, .keyInspect: return .inspect
         case .certKey, .certCSR, .csrKey, .certDiff, .chainVerify: return .verify
-        case .caBundle, .keystore: return .stores
+        case .caBundle, .bundleCheck, .keystore: return .stores
         case .genCSR, .genCert, .certConvert, .toPFX: return .generate
         }
     }
@@ -113,6 +116,7 @@ struct ContentView: View {
         case .certDiff:    CertDiffView()
         case .chainVerify: ChainVerifyView()
         case .caBundle:    CABundleView()
+        case .bundleCheck: BundleCheckView()
         case .keystore:    KeystoreView()
         case .genCSR:      GenCSRView()
         case .genCert:     GenCertView()
