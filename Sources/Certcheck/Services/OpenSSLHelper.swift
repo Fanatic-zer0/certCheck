@@ -7,6 +7,23 @@ class OpenSSLHelper {
     private init() {}
     
     private let opensslPath = "/usr/bin/openssl"
+
+    // MARK: - Secure Temp Files
+
+    /// Writes content to a uniquely-named temp file restricted to the owner (0600).
+    /// Private keys/passwords must never land in a world-readable path with a
+    /// predictable name — both leak secrets to other local users.
+    private func writeSecureTempFile(_ content: String, suffix: String = ".pem") throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("certcheck_\(UUID().uuidString)\(suffix)")
+        try content.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        return url
+    }
+
+    private func removeTempFiles(_ urls: [URL]) {
+        for url in urls { try? FileManager.default.removeItem(at: url) }
+    }
     
     // MARK: - Command Execution
     
@@ -284,29 +301,15 @@ class OpenSSLHelper {
     // MARK: - Key Matching
     
     func matchCertWithKey(certPEM: String, keyPEM: String) throws -> (match: Bool, detail: String) {
-        // Get certificate modulus
-        let certModulus = try runCommand(["x509", "-noout", "-modulus"], input: certPEM)
+        // "pkey" derives the public key regardless of algorithm (RSA/EC/Ed25519/Ed448)
+        // or container format (PKCS#1, SEC1, PKCS#8) — unlike "rsa"/"ec" which only
+        // handle one algorithm each, so a PKCS#8-wrapped EC key would error out on "rsa".
+        let certPubKey = try runCommand(["x509", "-noout", "-pubkey"], input: certPEM)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyPubKey = try runCommand(["pkey", "-pubout"], input: keyPEM)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         
-        // Detect key type and get modulus
-        var keyModulus: String
-        if keyPEM.contains("BEGIN RSA PRIVATE KEY") || keyPEM.contains("BEGIN PRIVATE KEY") {
-            keyModulus = try runCommand(["rsa", "-noout", "-modulus"], input: keyPEM)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if keyPEM.contains("BEGIN EC PRIVATE KEY") {
-            // For EC keys, compare public keys directly
-            let certPubKey = try runCommand(["x509", "-noout", "-pubkey"], input: certPEM)
-            let keyPubKey = try runCommand(["ec", "-pubout"], input: keyPEM)
-            let match = certPubKey.trimmingCharacters(in: .whitespacesAndNewlines) == 
-                       keyPubKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (match, match ? "Certificate public key matches the private key" : 
-                   "Certificate and private key do NOT match")
-        } else {
-            throw NSError(domain: "OpenSSL", code: -1, 
-                         userInfo: [NSLocalizedDescriptionKey: "Unsupported key type"])
-        }
-        
-        let match = certModulus == keyModulus
+        let match = certPubKey == keyPubKey
         let detail = match ? "Certificate public key matches the private key" : 
                             "Certificate and private key do NOT match"
         return (match, detail)
@@ -337,29 +340,13 @@ class OpenSSLHelper {
     }
     
     func matchCSRWithKey(csrPEM: String, keyPEM: String) throws -> (match: Bool, detail: String) {
-        // Get CSR modulus
-        let csrModulus = try runCommand(["req", "-noout", "-modulus"], input: csrPEM)
+        // "pkey" derives the public key regardless of algorithm or container format
+        let csrPubKey = try runCommand(["req", "-noout", "-pubkey"], input: csrPEM)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyPubKey = try runCommand(["pkey", "-pubout"], input: keyPEM)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         
-        // Detect key type and get modulus
-        var keyModulus: String
-        if keyPEM.contains("BEGIN RSA PRIVATE KEY") || keyPEM.contains("BEGIN PRIVATE KEY") {
-            keyModulus = try runCommand(["rsa", "-noout", "-modulus"], input: keyPEM)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if keyPEM.contains("BEGIN EC PRIVATE KEY") {
-            // For EC keys, compare public keys
-            let csrPubKey = try runCommand(["req", "-noout", "-pubkey"], input: csrPEM)
-            let keyPubKey = try runCommand(["ec", "-pubout"], input: keyPEM)
-            let match = csrPubKey.trimmingCharacters(in: .whitespacesAndNewlines) == 
-                       keyPubKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (match, match ? "CSR public key matches the private key" : 
-                   "CSR and private key do NOT match")
-        } else {
-            throw NSError(domain: "OpenSSL", code: -1, 
-                         userInfo: [NSLocalizedDescriptionKey: "Unsupported key type"])
-        }
-        
-        let match = csrModulus == keyModulus
+        let match = csrPubKey == keyPubKey
         let detail = match ? "CSR public key matches the private key" : 
                             "CSR and private key do NOT match"
         return (match, detail)
@@ -389,11 +376,9 @@ class OpenSSLHelper {
             if index + 1 < certPEMs.count {
                 // Verify against next cert in chain
                 let nextCert = certPEMs[index + 1]
-                let tempCertFile = FileManager.default.temporaryDirectory.appendingPathComponent("cert_\(index).pem")
-                let tempIssuerFile = FileManager.default.temporaryDirectory.appendingPathComponent("issuer_\(index).pem")
-                
-                try certPEM.write(to: tempCertFile, atomically: true, encoding: .utf8)
-                try nextCert.write(to: tempIssuerFile, atomically: true, encoding: .utf8)
+                let tempCertFile = try writeSecureTempFile(certPEM)
+                let tempIssuerFile = try writeSecureTempFile(nextCert)
+                defer { removeTempFiles([tempCertFile, tempIssuerFile]) }
                 
                 do {
                     _ = try runCommand(["verify", "-CAfile", tempIssuerFile.path, tempCertFile.path])
@@ -403,16 +388,11 @@ class OpenSSLHelper {
                     signatureOk = false
                     issuerChainOk = false
                 }
-                
-                try? FileManager.default.removeItem(at: tempCertFile)
-                try? FileManager.default.removeItem(at: tempIssuerFile)
             } else if let caBundle = caBundle, !caBundle.isEmpty {
                 // Verify against CA bundle
-                let tempCertFile = FileManager.default.temporaryDirectory.appendingPathComponent("cert_\(index).pem")
-                let tempCAFile = FileManager.default.temporaryDirectory.appendingPathComponent("ca.pem")
-                
-                try certPEM.write(to: tempCertFile, atomically: true, encoding: .utf8)
-                try caBundle.write(to: tempCAFile, atomically: true, encoding: .utf8)
+                let tempCertFile = try writeSecureTempFile(certPEM)
+                let tempCAFile = try writeSecureTempFile(caBundle)
+                defer { removeTempFiles([tempCertFile, tempCAFile]) }
                 
                 do {
                     _ = try runCommand(["verify", "-CAfile", tempCAFile.path, tempCertFile.path])
@@ -422,9 +402,6 @@ class OpenSSLHelper {
                     signatureOk = false
                     issuerChainOk = false
                 }
-                
-                try? FileManager.default.removeItem(at: tempCertFile)
-                try? FileManager.default.removeItem(at: tempCAFile)
             }
             
             links.append(ChainLink(
@@ -465,16 +442,8 @@ class OpenSSLHelper {
     }
     
     func generateCSR(privateKey: String, subject: OrderedDN, san: [String]) throws -> String {
-        let tempKeyFile = FileManager.default.temporaryDirectory.appendingPathComponent("temp_key.pem")
-        let tempConfigFile = FileManager.default.temporaryDirectory.appendingPathComponent("openssl.cnf")
-        
-        defer {
-            try? FileManager.default.removeItem(at: tempKeyFile)
-            try? FileManager.default.removeItem(at: tempConfigFile)
-        }
-        
-        // Write key to temp file
-        try privateKey.write(to: tempKeyFile, atomically: true, encoding: .utf8)
+        let tempKeyFile = try writeSecureTempFile(privateKey)
+        defer { removeTempFiles([tempKeyFile]) }
         
         // Build subject string from OrderedDN
         var subjectStr = ""
@@ -506,14 +475,8 @@ class OpenSSLHelper {
     
     func generateSelfSignedCert(privateKey: String, subject: OrderedDN, san: [String], 
                                days: Int, certType: String) throws -> String {
-        let tempKeyFile = FileManager.default.temporaryDirectory.appendingPathComponent("temp_key.pem")
-        
-        defer {
-            try? FileManager.default.removeItem(at: tempKeyFile)
-        }
-        
-        // Write key to temp file
-        try privateKey.write(to: tempKeyFile, atomically: true, encoding: .utf8)
+        let tempKeyFile = try writeSecureTempFile(privateKey)
+        defer { removeTempFiles([tempKeyFile]) }
         
         // Build subject string from OrderedDN
         var subjectStr = ""
@@ -553,34 +516,54 @@ class OpenSSLHelper {
         return try runCommand(args)
     }
     
+    /// Signs a CSR with a CA certificate/key, producing a properly chained certificate
+    /// (Issuer = CA subject) instead of a self-signed one.
+    func signCSRWithCA(csrPEM: String, caCertPEM: String, caKeyPEM: String,
+                       days: Int, extensionsConfig: String?) throws -> String {
+        let csrFile = try writeSecureTempFile(csrPEM)
+        let caCertFile = try writeSecureTempFile(caCertPEM)
+        let caKeyFile = try writeSecureTempFile(caKeyPEM)
+        // "-CAcreateserial" drops a .srl file next to the CA cert file
+        let serialFile = caCertFile.deletingPathExtension().appendingPathExtension("srl")
+        var tempFiles = [csrFile, caCertFile, caKeyFile, serialFile]
+        defer { removeTempFiles(tempFiles) }
+
+        var args = ["x509", "-req", "-in", csrFile.path,
+                    "-CA", caCertFile.path, "-CAkey", caKeyFile.path,
+                    "-CAcreateserial", "-days", "\(days)"]
+
+        if let extensionsConfig = extensionsConfig, !extensionsConfig.isEmpty {
+            let extFile = try writeSecureTempFile("[v3_ext]\n\(extensionsConfig)\n", suffix: ".cnf")
+            tempFiles.append(extFile)
+            args += ["-extfile", extFile.path, "-extensions", "v3_ext"]
+        }
+
+        return try runCommand(args)
+    }
+    
     func createPKCS12(certPEM: String, keyPEM: String, password: String, friendlyName: String, 
                      chainPEM: String?) throws -> Data {
-        let tempCertFile = FileManager.default.temporaryDirectory.appendingPathComponent("cert.pem")
-        let tempKeyFile = FileManager.default.temporaryDirectory.appendingPathComponent("key.pem")
-        let tempP12File = FileManager.default.temporaryDirectory.appendingPathComponent("bundle.p12")
-        let tempChainFile = FileManager.default.temporaryDirectory.appendingPathComponent("chain.pem")
-        
-        defer {
-            try? FileManager.default.removeItem(at: tempCertFile)
-            try? FileManager.default.removeItem(at: tempKeyFile)
-            try? FileManager.default.removeItem(at: tempP12File)
-            try? FileManager.default.removeItem(at: tempChainFile)
-        }
-        
-        // Write files
-        try certPEM.write(to: tempCertFile, atomically: true, encoding: .utf8)
-        try keyPEM.write(to: tempKeyFile, atomically: true, encoding: .utf8)
+        let tempCertFile = try writeSecureTempFile(certPEM)
+        let tempKeyFile = try writeSecureTempFile(keyPEM)
+        let tempP12File = FileManager.default.temporaryDirectory.appendingPathComponent("certcheck_\(UUID().uuidString).p12")
+        // Pass the password via a file, not argv — command-line args are visible
+        // to other local users via `ps`.
+        let tempPassFile = try writeSecureTempFile(password, suffix: ".pass")
+        var tempFiles = [tempCertFile, tempKeyFile, tempPassFile]
+        defer { removeTempFiles(tempFiles + [tempP12File]) }
         
         var args = ["pkcs12", "-export", "-out", tempP12File.path, 
                     "-in", tempCertFile.path, "-inkey", tempKeyFile.path,
-                    "-password", "pass:\(password)", "-name", friendlyName]
+                    "-passout", "file:\(tempPassFile.path)", "-name", friendlyName]
         
         if let chainPEM = chainPEM, !chainPEM.isEmpty {
-            try chainPEM.write(to: tempChainFile, atomically: true, encoding: .utf8)
+            let tempChainFile = try writeSecureTempFile(chainPEM)
+            tempFiles.append(tempChainFile)
             args += ["-certfile", tempChainFile.path]
         }
         
         _ = try runCommand(args)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tempP12File.path)
         
         return try Data(contentsOf: tempP12File)
     }
@@ -650,18 +633,22 @@ class OpenSSLHelper {
     }
 
     func convertCertToPKCS7(_ pem: String) throws -> String {
-        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("cc_\(UUID().uuidString).pem")
-        defer { try? FileManager.default.removeItem(at: tmp) }
-        try pem.write(to: tmp, atomically: true, encoding: .utf8)
+        let tmp = try writeSecureTempFile(pem)
+        defer { removeTempFiles([tmp]) }
         return try runCommand(["crl2pkcs7", "-nocrl", "-certfile", tmp.path])
     }
 
     // MARK: - Keystore (PKCS#12)
 
     func extractCertsFromPKCS12(path: String, password: String) throws -> [String] {
+        // Pass the password via a file, not argv — command-line args are visible
+        // to other local users via `ps`.
+        let tempPassFile = try writeSecureTempFile(password, suffix: ".pass")
+        defer { removeTempFiles([tempPassFile]) }
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: opensslPath)
-        process.arguments = ["pkcs12", "-in", path, "-nokeys", "-passin", "pass:\(password)"]
+        process.arguments = ["pkcs12", "-in", path, "-nokeys", "-passin", "file:\(tempPassFile.path)"]
         let outPipe = Pipe(), errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
