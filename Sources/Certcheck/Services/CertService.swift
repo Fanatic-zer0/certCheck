@@ -209,9 +209,9 @@ class CertService {
     // MARK: - Generation
     
     func generateCSR(subject: CertSubject, keyAlgo: KeyAlgoConfig) throws -> (csr: String, key: String) {
-        let keyPair = try generateKeyPair(keyAlgo)
-        let csr = try createCSR(subject: subject, keyPair: keyPair)
-        return (csr, keyPair.privatePEM)
+        let privateKeyPEM = try generateKeyPair(keyAlgo)
+        let csr = try createCSR(subject: subject, privateKeyPEM: privateKeyPEM)
+        return (csr, privateKeyPEM)
     }
     
     func generateCertificate(
@@ -759,26 +759,17 @@ class CertService {
         throw CertError.keystoreParsingNotSupported
     }
     
-    private func generateKeyPair(_ config: KeyAlgoConfig) throws -> (publicKey: SecKey, privateKey: SecKey, privatePEM: String) {
-        // Use OpenSSL to generate key pair
-        let algorithm = config.kind.rawValue
-        let keySize: Int
+    private func keySize(for config: KeyAlgoConfig) -> Int {
         switch config.kind {
-        case .rsa:
-            keySize = Int(config.rsaBits.rawValue) ?? 2048
-        case .ec:
-            keySize = extractECKeySize(config.curve)
-        case .ed25519:
-            keySize = 256
-        case .ed448:
-            keySize = 448
+        case .rsa:     return Int(config.rsaBits.rawValue) ?? 2048
+        case .ec:      return extractECKeySize(config.curve)
+        case .ed25519: return 256
+        case .ed448:   return 448
         }
-        
-        let privatePEM = try OpenSSLHelper.shared.generateKeyPair(algorithm: algorithm, keySize: keySize)
-        // For compatibility, we don't need actual SecKey objects - just return dummy values
-        // The PEM is what we'll use for CSR/cert generation
-        let dummyKey = try extractPublicKeyFromCert(try pemToCertificate("-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAKHHCgVZU6krMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBnRl\nc3QwHhcNMjQwMTA\nMTAwMDAwMFoXDTI1MDEwMTAwMDAwMFowETEPMA0GA1UEAwwGdGVzdDBcMA0GCSqG\nSIb3DQEBAQUAA0sAMEgCQQC8wwxh8xZN6NjE9+h5LhJ7\n8wAb4TjT0VR1hpQz5Nz5\noIU8wRAMFKEPJFE0LRUQ5bKMZTwI0vJ3PSUI0s9uAgMBAAEwDQYJKoZIhvcNAQEL\nBQADQQCQO8DlZ0M+dRRwHV4WRwZZQR4uI4gLmPPYa0rJ\nQYLJZjL0/8kXLKhAJB3Q\nGzBQF1HZjZ4tPvKLZhYJ5Q==\n-----END CERTIFICATE-----"))
-        return (dummyKey, dummyKey, privatePEM)
+    }
+
+    private func generateKeyPair(_ config: KeyAlgoConfig) throws -> String {
+        return try OpenSSLHelper.shared.generateKeyPair(algorithm: config.kind.rawValue, keySize: keySize(for: config))
     }
     
     private func extractECKeySize(_ curve: ECCurve) -> Int {
@@ -789,28 +780,13 @@ class CertService {
         }
     }
     
-    private func createCSR(subject: CertSubject, keyPair: (SecKey, SecKey, String)) throws -> String {
-        // Use OpenSSL to create CSR
-        let privateKeyPEM = keyPair.2
+    private func createCSR(subject: CertSubject, privateKeyPEM: String) throws -> String {
         return try OpenSSLHelper.shared.generateCSR(privateKey: privateKeyPEM, subject: subject.toOrderedDN(), san: [])
     }
     
     private func generateSelfSigned(subject: CertSubject, keyAlgo: KeyAlgoConfig, validDays: Int) throws -> (String, String) {
         // Use OpenSSL to generate self-signed certificate
-        let algorithm = keyAlgo.kind.rawValue
-        let keySize: Int
-        switch keyAlgo.kind {
-        case .rsa:
-            keySize = Int(keyAlgo.rsaBits.rawValue) ?? 2048
-        case .ec:
-            keySize = extractECKeySize(keyAlgo.curve)
-        case .ed25519:
-            keySize = 256
-        case .ed448:
-            keySize = 448
-        }
-        
-        let privateKey = try OpenSSLHelper.shared.generateKeyPair(algorithm: algorithm, keySize: keySize)
+        let privateKey = try OpenSSLHelper.shared.generateKeyPair(algorithm: keyAlgo.kind.rawValue, keySize: keySize(for: keyAlgo))
         let cert = try OpenSSLHelper.shared.generateSelfSignedCert(
             privateKey: privateKey,
             subject: subject.toOrderedDN(),
@@ -823,20 +799,7 @@ class CertService {
     
     private func generateRootCA(subject: CertSubject, keyAlgo: KeyAlgoConfig, validDays: Int) throws -> (String, String) {
         // Use OpenSSL to generate root CA certificate
-        let algorithm = keyAlgo.kind.rawValue
-        let keySize: Int
-        switch keyAlgo.kind {
-        case .rsa:
-            keySize = Int(keyAlgo.rsaBits.rawValue) ?? 2048
-        case .ec:
-            keySize = extractECKeySize(keyAlgo.curve)
-        case .ed25519:
-            keySize = 256
-        case .ed448:
-            keySize = 448
-        }
-        
-        let privateKey = try OpenSSLHelper.shared.generateKeyPair(algorithm: algorithm, keySize: keySize)
+        let privateKey = try OpenSSLHelper.shared.generateKeyPair(algorithm: keyAlgo.kind.rawValue, keySize: keySize(for: keyAlgo))
         let cert = try OpenSSLHelper.shared.generateSelfSignedCert(
             privateKey: privateKey,
             subject: subject.toOrderedDN(),
@@ -848,35 +811,30 @@ class CertService {
     }
     
     private func generateIntermediateCA(subject: CertSubject, keyAlgo: KeyAlgoConfig, validDays: Int, caCertPEM: String, caKeyPEM: String) throws -> (String, String) {
-        // Use OpenSSL to generate intermediate CA certificate
-        let algorithm = keyAlgo.kind.rawValue
-        let keySize: Int
-        switch keyAlgo.kind {
-        case .rsa:
-            keySize = Int(keyAlgo.rsaBits.rawValue) ?? 2048
-        case .ec:
-            keySize = extractECKeySize(keyAlgo.curve)
-        case .ed25519:
-            keySize = 256
-        case .ed448:
-            keySize = 448
-        }
-        
-        let privateKey = try OpenSSLHelper.shared.generateKeyPair(algorithm: algorithm, keySize: keySize)
-        let cert = try OpenSSLHelper.shared.generateSelfSignedCert(
-            privateKey: privateKey,
-            subject: subject.toOrderedDN(),
-            san: [],
+        // An intermediate must be issued by the parent CA, not self-signed —
+        // generate its own key/CSR, then have the CA sign it.
+        let privateKey = try OpenSSLHelper.shared.generateKeyPair(algorithm: keyAlgo.kind.rawValue, keySize: keySize(for: keyAlgo))
+        let csr = try OpenSSLHelper.shared.generateCSR(privateKey: privateKey, subject: subject.toOrderedDN(), san: [])
+        let cert = try OpenSSLHelper.shared.signCSRWithCA(
+            csrPEM: csr,
+            caCertPEM: caCertPEM,
+            caKeyPEM: caKeyPEM,
             days: validDays,
-            certType: "Intermediate CA"
+            extensionsConfig: "basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign"
         )
         return (cert, privateKey)
     }
     
     private func signCSR(csrPEM: String, caCertPEM: String, caKeyPEM: String, validDays: Int) throws -> (String, String) {
-        // For now, return CSR unchanged - proper signing would need more OpenSSL work
-        // This is a simplified implementation
-        throw CertError.certSigningNotSupported
+        let cert = try OpenSSLHelper.shared.signCSRWithCA(
+            csrPEM: csrPEM,
+            caCertPEM: caCertPEM,
+            caKeyPEM: caKeyPEM,
+            days: validDays,
+            extensionsConfig: "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth,clientAuth"
+        )
+        // No private key is returned — the CSR's key belongs to the requester, not this CA.
+        return (cert, "")
     }
     
     private func buildPKCS12(certPEM: String, keyPEM: String, chainPEM: String?, password: String, friendlyName: String?) throws -> Data {
