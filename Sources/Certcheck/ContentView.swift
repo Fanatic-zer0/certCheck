@@ -11,11 +11,13 @@ enum TabID: String, CaseIterable, Identifiable {
     case chainVerify = "chain"
     case caBundle    = "ca-bundle"
     case bundleCheck = "bundle-check"
-    case keystore    = "keystore"
+    case keytoolOpen = "keytool-open"
+    case keytoolOps  = "keytool-ops"
     case genCSR      = "gen-csr"
     case genCert     = "gen-cert"
     case certConvert = "cert-convert"
     case toPFX       = "to-pfx"
+    case base64Convert = "base64-convert"
 
     var id: String { rawValue }
 
@@ -31,11 +33,13 @@ enum TabID: String, CaseIterable, Identifiable {
         case .chainVerify: return "Chain Verify"
         case .caBundle:    return "CA Bundle"
         case .bundleCheck: return "Bundle Check"
-        case .keystore:    return "Keystore"
+        case .keytoolOpen: return "Keystore"
+        case .keytoolOps:  return "KeytoolOp"
         case .genCSR:      return "Generate CSR"
         case .genCert:     return "Generate Cert"
         case .certConvert: return "Converter"
         case .toPFX:       return "To PFX / P12"
+        case .base64Convert: return "Base64 Convert"
         }
     }
 
@@ -51,11 +55,13 @@ enum TabID: String, CaseIterable, Identifiable {
         case .chainVerify: return "shield.checkered"
         case .caBundle:    return "books.vertical"
         case .bundleCheck: return "checkmark.seal"
-        case .keystore:    return "cylinder"
+        case .keytoolOpen: return "lock.open.fill"
+        case .keytoolOps:  return "slider.horizontal.3"
         case .genCSR:      return "pencil.and.list.clipboard"
         case .genCert:     return "checkmark.shield.fill"
         case .certConvert: return "arrow.2.squarepath"
         case .toPFX:       return "shippingbox"
+        case .base64Convert: return "doc.plaintext"
         }
     }
 
@@ -63,8 +69,8 @@ enum TabID: String, CaseIterable, Identifiable {
         switch self {
         case .certDecode, .csrDecode, .keyInspect: return .inspect
         case .certKey, .certCSR, .csrKey, .certDiff, .chainVerify: return .verify
-        case .caBundle, .bundleCheck, .keystore: return .stores
-        case .genCSR, .genCert, .certConvert, .toPFX: return .generate
+        case .caBundle, .bundleCheck, .keytoolOpen, .keytoolOps: return .stores
+        case .genCSR, .genCert, .certConvert, .toPFX, .base64Convert: return .generate
         }
     }
 }
@@ -117,11 +123,13 @@ struct ContentView: View {
         case .chainVerify: ChainVerifyView()
         case .caBundle:    CABundleView()
         case .bundleCheck: BundleCheckView()
-        case .keystore:    KeystoreView()
+        case .keytoolOpen: OpenKeystoreView()
+        case .keytoolOps:  KeytoolOperationsView()
         case .genCSR:      GenCSRView()
         case .genCert:     GenCertView()
         case .certConvert: CertConvertView()
         case .toPFX:       ToPFXView()
+        case .base64Convert: Base64ConverterView()
         }
     }
 }
