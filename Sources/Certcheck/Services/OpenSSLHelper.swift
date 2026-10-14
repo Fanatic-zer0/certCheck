@@ -28,35 +28,18 @@ class OpenSSLHelper {
     // MARK: - Command Execution
     
     private func runCommand(_ args: [String], input: String? = nil) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: opensslPath)
-        process.arguments = args
-        
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-        
-        if let input = input {
-            let inputPipe = Pipe()
-            process.standardInput = inputPipe
-            try inputPipe.fileHandleForWriting.write(contentsOf: input.data(using: .utf8)!)
-            try inputPipe.fileHandleForWriting.close()
-        }
-        
-        try process.run()
-        process.waitUntilExit()
-        
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        
-        guard process.terminationStatus == 0 else {
-            let errorMsg = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            throw NSError(domain: "OpenSSL", code: Int(process.terminationStatus), 
+        let result = try ProcessRunner.run(
+            executable: opensslPath, arguments: args,
+            stdin: input.flatMap { $0.data(using: .utf8) }
+        )
+
+        guard result.exitCode == 0 else {
+            let errorMsg = String(data: result.stderr, encoding: .utf8) ?? "Unknown error"
+            throw NSError(domain: "OpenSSL", code: Int(result.exitCode),
                          userInfo: [NSLocalizedDescriptionKey: errorMsg])
         }
-        
-        return String(data: outputData, encoding: .utf8) ?? ""
+
+        return String(data: result.stdout, encoding: .utf8) ?? ""
     }
     
     // MARK: - Certificate Extensions Parsing
@@ -646,20 +629,16 @@ class OpenSSLHelper {
         let tempPassFile = try writeSecureTempFile(password, suffix: ".pass")
         defer { removeTempFiles([tempPassFile]) }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: opensslPath)
-        process.arguments = ["pkcs12", "-in", path, "-nokeys", "-passin", "file:\(tempPassFile.path)"]
-        let outPipe = Pipe(), errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-        try process.run()
-        process.waitUntilExit()
+        let result = try ProcessRunner.run(
+            executable: opensslPath,
+            arguments: ["pkcs12", "-in", path, "-nokeys", "-passin", "file:\(tempPassFile.path)"]
+        )
 
-        let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let out = String(data: result.stdout, encoding: .utf8) ?? ""
+        let err = String(data: result.stderr, encoding: .utf8) ?? ""
 
-        if process.terminationStatus != 0 && out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            throw NSError(domain: "OpenSSL", code: Int(process.terminationStatus),
+        if result.exitCode != 0 && out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw NSError(domain: "OpenSSL", code: Int(result.exitCode),
                          userInfo: [NSLocalizedDescriptionKey: err.trimmingCharacters(in: .whitespacesAndNewlines)])
         }
 
@@ -680,25 +659,15 @@ class OpenSSLHelper {
 
     // Binary output variant of runCommand (no string decoding)
     private func runCommandData(_ args: [String], input: String? = nil) throws -> Data {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: opensslPath)
-        process.arguments = args
-        let outPipe = Pipe(), errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-        if let input = input {
-            let inPipe = Pipe()
-            process.standardInput = inPipe
-            try inPipe.fileHandleForWriting.write(contentsOf: input.data(using: .utf8)!)
-            try inPipe.fileHandleForWriting.close()
-        }
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let msg = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "Error"
-            throw NSError(domain: "OpenSSL", code: Int(process.terminationStatus),
+        let result = try ProcessRunner.run(
+            executable: opensslPath, arguments: args,
+            stdin: input.flatMap { $0.data(using: .utf8) }
+        )
+        guard result.exitCode == 0 else {
+            let msg = String(data: result.stderr, encoding: .utf8) ?? "Error"
+            throw NSError(domain: "OpenSSL", code: Int(result.exitCode),
                          userInfo: [NSLocalizedDescriptionKey: msg])
         }
-        return outPipe.fileHandleForReading.readDataToEndOfFile()
+        return result.stdout
     }
 }
