@@ -321,14 +321,18 @@ struct DownloadButton: View {
 
 struct ErrorText: View {
     let error: String
-    
+
+    // Only CertError's "not yet implemented" messages mention "integration" (see CertService.CertError);
+    // genuine runtime failures (wrong password, keytool/openssl exit non-zero, etc.) must not be mislabeled as such.
+    private var isUnsupportedFeature: Bool { error.contains("integration") }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundColor(.orange)
+                Image(systemName: isUnsupportedFeature ? "exclamationmark.triangle.fill" : "xmark.octagon.fill")
+                    .foregroundColor(isUnsupportedFeature ? .orange : .red)
                     .font(.system(size: 14))
-                Text("Feature Not Available")
+                Text(isUnsupportedFeature ? "Feature Not Available" : "Error")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.primary)
             }
@@ -338,7 +342,7 @@ struct ErrorText: View {
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             
-            if error.contains("openssl") || error.contains("keytool") {
+            if isUnsupportedFeature {
                 HStack(spacing: 4) {
                     Image(systemName: "info.circle")
                         .font(.system(size: 10))
@@ -353,11 +357,12 @@ struct ErrorText: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.orange.opacity(0.08))
+                .fill((isUnsupportedFeature ? Color.orange : Color.red).opacity(0.08))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+                .stroke((isUnsupportedFeature ? Color.orange : Color.red).opacity(0.3), lineWidth: 1)
         )
     }
 }
+
