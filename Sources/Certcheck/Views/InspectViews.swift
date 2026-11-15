@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct CertDecodeView: View {
+    @Environment(\.updateSessionResourceName) private var updateSessionResourceName
     @State private var inputPEM = ""
     @State private var certInfo: CertInfo?
     @State private var error: String?
@@ -87,6 +88,9 @@ struct CertDecodeView: View {
                 }
             }
             .padding()
+        }
+        .onChange(of: inputPEM) { _ in
+            updateSessionResourceName([], [])
         }
     }
     
@@ -243,6 +247,7 @@ struct CertDecodeView: View {
         isLoading = true
         error = nil
         certInfo = nil
+        updateSessionResourceName([], [])
         
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -250,6 +255,7 @@ struct CertDecodeView: View {
                 DispatchQueue.main.async {
                     self.certInfo = info
                     self.isLoading = false
+                    self.updateSessionResourceName(info.subject, info.san)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -272,6 +278,7 @@ struct CertDecodeView: View {
 }
 
 struct CSRDecodeView: View {
+    @Environment(\.updateSessionResourceName) private var updateSessionResourceName
     @State private var inputPEM = ""
     @State private var csrInfo: CSRInfo?
     @State private var error: String?
@@ -330,6 +337,9 @@ struct CSRDecodeView: View {
                 }
             }
             .padding()
+        }
+        .onChange(of: inputPEM) { _ in
+            updateSessionResourceName([], [])
         }
     }
     
@@ -400,12 +410,14 @@ struct CSRDecodeView: View {
     private func parseCSR() {
         error = nil
         csrInfo = nil
+        updateSessionResourceName([], [])
         
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let info = try CertService.shared.parseCSR(pem: inputPEM)
                 DispatchQueue.main.async {
                     self.csrInfo = info
+                    self.updateSessionResourceName(info.subject, info.sans)
                 }
             } catch {
                 DispatchQueue.main.async {
