@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct GenCSRView: View {
+    @Environment(\.updateSessionResourceName) private var updateSessionResourceName
     @State private var subject = CertSubject()
     @State private var keyAlgo = KeyAlgoConfig()
     @State private var csrPEM = ""
@@ -42,6 +43,9 @@ struct GenCSRView: View {
                 }
             }
             .padding()
+        }
+        .onChange(of: subject.cn) { _ in
+            updateSessionResourceName(subject.toOrderedDN(), [])
         }
     }
     
@@ -173,6 +177,7 @@ struct GenCSRView: View {
 }
 
 struct GenCertView: View {
+    @Environment(\.updateSessionResourceName) private var updateSessionResourceName
     @State private var certType: CertType = .selfSigned
     @State private var subject = CertSubject()
     @State private var keyAlgo = KeyAlgoConfig()
@@ -279,6 +284,12 @@ struct GenCertView: View {
                 }
             }
             .padding()
+        }
+        .onChange(of: subject.cn) { _ in
+            updateSessionResourceName(needsSubject ? subject.toOrderedDN() : [], [])
+        }
+        .onChange(of: certType) { _ in
+            updateSessionResourceName(needsSubject ? subject.toOrderedDN() : [], [])
         }
     }
     
