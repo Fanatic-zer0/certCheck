@@ -11,6 +11,10 @@ let package = Package(
             swiftSettings: [
                 .unsafeFlags(["-parse-as-library"])
             ]
+        ),
+        .testTarget(
+            name: "CertcheckTests",
+            dependencies: ["Certcheck"]
         )
     ]
 )
