@@ -27,6 +27,22 @@
 - **Converter**: Convert Cert from PEM to DER or PKCS#7/ P7B
 - **To PFX**: Bundle certificates, keys, and chains into PKCS#12 files
 
+### Workspace Tabs
+
+- Open multiple independent tabs of any tool type using the plus button or File > New Tab (Cmd+T).
+- Use the dropdown beside the plus button to open a tab for another tool.
+- Selecting a sidebar tool returns to its last-used open tab, or creates one if none exists.
+- Inputs, results, errors, and running operations stay in memory when switching tabs or tools.
+- Right-click a tab to rename it, move it left or right, or open another tab of the same type.
+- New tabs use the tool name without numbering. Certificate and CSR decoder tabs use the parsed common name, or a SAN when no common name exists. Certificate comparison uses Certificate A's name, and generation forms use the entered common name. Manually renamed tabs keep their custom titles.
+- Close a tab with its close button or File > Close Tab (Cmd+Shift+W).
+- File > New Window (Cmd+N) opens an independent workspace. Cmd+W closes the window.
+- Session contents are not saved to disk or restored after quitting. Passwords and private keys remain in memory only unless explicitly exported by a tool.
+- Closing a tab discards its view state. Already-started operations may finish, including writing requested output files, but do not update another tab.
+- The existing keystore registry remains shared between tabs and windows; registered keystores are not duplicated per session.
+
+
+
 ## Screenshot
 
 <img width="1384" height="951" alt="image" src="https://github.com/user-attachments/assets/ba8b121b-2e6a-4a1b-ad7f-985b7b2b92d3" />
