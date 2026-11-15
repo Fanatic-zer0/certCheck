@@ -81,6 +81,7 @@ struct KeyInspectView: View {
 // MARK: - Certificate Diff
 
 struct CertDiffView: View {
+    @Environment(\.updateSessionResourceName) private var updateSessionResourceName
     @State private var pemA = ""
     @State private var pemB = ""
     @State private var certA: CertInfo?
@@ -136,6 +137,9 @@ struct CertDiffView: View {
                 }
             }
             .padding()
+        }
+        .onChange(of: [pemA, pemB]) { _ in
+            updateSessionResourceName([], [])
         }
     }
 
@@ -222,11 +226,15 @@ struct CertDiffView: View {
 
     private func compare() {
         isLoading = true; error = nil; certA = nil; certB = nil
+        updateSessionResourceName([], [])
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let a = try CertService.shared.parseCertificate(pem: pemA)
                 let b = try CertService.shared.parseCertificate(pem: pemB)
-                DispatchQueue.main.async { self.certA = a; self.certB = b; self.isLoading = false }
+                DispatchQueue.main.async {
+                    self.certA = a; self.certB = b; self.isLoading = false
+                    self.updateSessionResourceName(a.subject, a.san)
+                }
             } catch {
                 DispatchQueue.main.async { self.error = error.localizedDescription; self.isLoading = false }
             }
