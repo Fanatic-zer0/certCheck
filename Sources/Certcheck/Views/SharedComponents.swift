@@ -130,7 +130,7 @@ struct FieldRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Text(label)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundColor(.secondary)
                 .frame(minWidth: 100, maxWidth: isWide ? .infinity : 160, alignment: .trailing)
                 .lineLimit(nil)
@@ -140,7 +140,6 @@ struct FieldRow: View {
                 .font(.system(size: 11, weight: .regular))
                 .foregroundColor(.primary)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .lineLimit(nil)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -157,7 +156,11 @@ struct FieldRow: View {
                 }
                 .buttonStyle(.plain)
                 .frame(width: 18)
+                .help("Copy \(label)")
+                .accessibilityLabel("Copy \(label)")
             }
+
+            Spacer(minLength: 0)
         }
         .padding(.vertical, 4)
     }
