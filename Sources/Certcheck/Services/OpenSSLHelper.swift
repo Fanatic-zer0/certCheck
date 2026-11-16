@@ -56,16 +56,13 @@ class OpenSSLHelper {
         "1.2.840.113533.7.65.0":    "Entrust Version Extension",
     ]
 
-    /// Returns true when OpenSSL has dumped a binary blob as ASCII (many non-printable substitution dots)
-    private func looksLikeBinaryDump(_ value: String) -> Bool {
-        guard !value.isEmpty else { return false }
-        let dots = value.filter { $0 == "." }.count
-        return Double(dots) / Double(value.count) > 0.25
-    }
-
     /// Parse all X.509v3 extensions AND the signature algorithm from a single OpenSSL text call.
     func parseAllExtensions(_ pem: String) throws -> (extensions: [CertExtension], san: [String], sigAlg: String) {
-        let text = try runCommand(["x509", "-noout", "-text"], input: pem)
+        let text = try runCommand(["x509", "-noout", "-text", "-certopt", "ext_dump"], input: pem)
+        return parseCertificateExtensionsText(text)
+    }
+
+    func parseCertificateExtensionsText(_ text: String) -> (extensions: [CertExtension], san: [String], sigAlg: String) {
         let lines = text.components(separatedBy: .newlines)
 
         // Extract sig alg from first occurrence (the second one is inside the Signature block)
@@ -94,22 +91,21 @@ class OpenSSLHelper {
         func flush() {
             guard !currentName.isEmpty else { return }
             // Map OID to readable name if still numeric
-            let displayName = oidNames[currentName] ?? currentName
+            let displayName = oidNames[currentName].map { "\($0) (\(currentName))" } ?? currentName
             
-            let value = currentValueLines
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
+            let valueIndent = currentValueLines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                .map { $0.prefix(while: { $0 == " " }).count }.min() ?? 0
+            let value = currentValueLines.map { String($0.dropFirst(valueIndent)) }
                 .joined(separator: "\n")
             
-            // Replace binary garbage output with a clean label
-            let displayValue = looksLikeBinaryDump(value) ? "Binary data (not human-readable)" : value
-            
             if displayName == "Subject Alternative Name" {
-                san = value.components(separatedBy: ",")
+                let separators = #",\s*(?=(?:DNS|IP Address|IP|URI|email|DirName|othername|Registered ID|RID|X400Name|EdiPartyName):)"#
+                san = value.replacingOccurrences(of: separators, with: "\n", options: .regularExpression)
+                    .components(separatedBy: .newlines)
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
             }
-            extensions.append(CertExtension(name: displayName, critical: currentCritical, value: displayValue))
+            extensions.append(CertExtension(name: displayName, critical: currentCritical, value: value))
             currentName = ""
             currentCritical = false
             currentValueLines = []
@@ -140,7 +136,7 @@ class OpenSSLHelper {
                 currentName = namePart
                 currentCritical = critical
             } else {
-                currentValueLines.append(trimmed)
+                currentValueLines.append(raw)
             }
         }
         flush()
