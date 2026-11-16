@@ -24,8 +24,14 @@ class CertService {
         // Public key info
         let publicKey = try extractPublicKeyInfo(cert)
         
-        // Use OpenSSL for all extension parsing — Security.framework returns raw OIDs and numbers
-        let opensslResult = (try? OpenSSLHelper.shared.parseAllExtensions(pem)) ?? ([], [], "Unknown")
+        var extensionWarning: String?
+        let opensslResult: (extensions: [CertExtension], san: [String], sigAlg: String)
+        do {
+            opensslResult = try OpenSSLHelper.shared.parseAllExtensions(pem)
+        } catch {
+            opensslResult = ([], [], "Unknown")
+            extensionWarning = "Full extension details are unavailable: \(error.localizedDescription)"
+        }
         let extensions = opensslResult.0
         var san = opensslResult.1
         let sigAlgOpenSSL = opensslResult.2
@@ -60,7 +66,8 @@ class CertService {
             version: version,
             extensions: extensions,
             isCA: isCA,
-            selfSigned: selfSigned
+            selfSigned: selfSigned,
+            extensionWarning: extensionWarning
         )
     }
     
