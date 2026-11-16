@@ -6,274 +6,116 @@ struct CertDecodeView: View {
     @State private var certInfo: CertInfo?
     @State private var error: String?
     @State private var isLoading = false
-    
-    private var isExpired: Bool {
-        guard let info = certInfo,
-              let date = ISO8601DateFormatter().date(from: info.notAfter) else {
-            return false
-        }
-        return date < Date()
-    }
-
-    private var daysUntilExpiry: Int? {
-        guard let info = certInfo,
-              let date = ISO8601DateFormatter().date(from: info.notAfter) else { return nil }
-        return Calendar.current.dateComponents([.day], from: Date(), to: date).day
-    }
-
-    private var expiryDate: Date? {
-        guard let info = certInfo else { return nil }
-        return ISO8601DateFormatter().date(from: info.notAfter)
-    }
+    @State private var validity: CertificateValidity?
+    @State private var activeRequestID: UUID?
+    @State private var inputExpanded = true
     
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            LazyVStack(alignment: .leading, spacing: 20) {
                 HStack(spacing: 10) {
                     Image(systemName: "doc.text.magnifyingglass")
                         .font(.title2)
-                        .foregroundColor(Color(hue: 0.68, saturation: 0.70, brightness: 0.75))
+                        .foregroundStyle(.teal)
                     Text("Certificate Decoder")
                         .font(.title2.bold())
+                    Spacer()
+                    Button {
+                        reset()
+                        inputPEM = ""
+                        inputExpanded = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .help("Clear Certificate")
+                    .accessibilityLabel("Clear Certificate")
+                    .disabled(inputPEM.isEmpty && certInfo == nil && !isLoading)
                 }
-                
-                Text("Decode and inspect X.509 certificates in PEM format")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                PEMInputField(
-                    label: "PEM Certificate",
-                    placeholder: "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
-                    text: $inputPEM
-                )
-                
-                HStack(spacing: 12) {
-                    ActionButton(
-                        title: "Parse Certificate",
-                        icon: "magnifyingglass",
-                        action: parseCert,
-                        disabled: inputPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    )
-                    
-                    if certInfo != nil {
-                        HStack(spacing: 4) {
-                            Image(systemName: isExpired ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                                .foregroundColor(isExpired ? .red : .green)
-                            Text(isExpired ? "Expired" : "Valid")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            Capsule()
-                                .fill(isExpired ? Color.red.opacity(0.12) : Color.green.opacity(0.12))
+
+                DisclosureGroup("PEM Certificate", isExpanded: $inputExpanded) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        PEMInputField(
+                            label: "X.509 Certificate",
+                            placeholder: "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+                            text: $inputPEM
                         )
-
-                        if let info = certInfo, info.certType != .leaf {
-                            certTypeBadge(info.certType)
-                        }
-
-                        if let days = daysUntilExpiry, let expiry = expiryDate {
-                            expiryBadge(daysRemaining: days, expiryDate: expiry)
+                        HStack(spacing: 12) {
+                            ActionButton(
+                                title: isLoading ? "Decoding..." : "Decode Certificate",
+                                icon: "magnifyingglass",
+                                action: parseCert,
+                                disabled: isLoading || inputPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            )
+                            if isLoading {
+                                ProgressView().controlSize(.small)
+                                    .accessibilityLabel("Decoding certificate")
+                            }
                         }
                     }
+                    .padding(.top, 10)
                 }
-                
+                .font(.system(size: 12, weight: .semibold))
+
                 if let error = error {
                     ErrorText(error: error)
                 }
-                
-                if let info = certInfo {
-                    certDetailView(info)
+
+                if let info = certInfo, let validity {
+                    CertificateResultsView(info: info, validity: validity)
                 }
             }
-            .padding()
+            .padding(4)
         }
         .onChange(of: inputPEM) { _ in
-            updateSessionResourceName([], [])
+            reset()
         }
-    }
-    
-    @ViewBuilder
-    private func certDetailView(_ info: CertInfo) -> some View {
-        VStack(spacing: 16) {
-            // Subject
-            InfoCard(title: "Subject") {
-                AnyView(
-                    VStack(spacing: 4) {
-                        if info.subject.isEmpty {
-                            FieldRow(label: "—", value: "(no subject fields)")
-                        } else {
-                            ForEach(info.subject.indices, id: \.self) { idx in
-                                FieldRow(label: info.subject[idx].key, value: info.subject[idx].value)
-                            }
-                        }
-                    }
-                )
-            }
-            
-            // Issuer
-            InfoCard(title: "Issuer") {
-                AnyView(
-                    VStack(spacing: 4) {
-                        if info.issuer.isEmpty {
-                            FieldRow(label: "—", value: "(no issuer fields)")
-                        } else {
-                            ForEach(info.issuer.indices, id: \.self) { idx in
-                                FieldRow(label: info.issuer[idx].key, value: info.issuer[idx].value)
-                            }
-                        }
-                    }
-                )
-            }
-            
-            // Properties
-            InfoCard(title: "Properties") {
-                AnyView(
-                    VStack(spacing: 4) {
-                        FieldRow(label: "Version", value: "v\(info.version)")
-                        FieldRow(label: "Serial", value: info.serial)
-                        FieldRow(label: "Signature Alg", value: info.signatureAlg)
-                        FieldRow(label: "Public Key", value: "\(info.publicKey.type) (\(info.publicKey.bits) bits)")
-                        FieldRow(label: "Not Before", value: formatDate(info.notBefore))
-                        FieldRow(label: "Not After", value: formatDate(info.notAfter) + (isExpired ? " ⚠ EXPIRED" : ""))
-                    }
-                )
-            }
-            
-            // Extensions
-            if !info.extensions.isEmpty {
-                InfoCard(title: "Certificate Extensions (\(info.extensions.count))") {
-                    AnyView(
-                        VStack(spacing: 4) {
-                            ForEach(info.extensions.indices, id: \.self) { idx in
-                                let ext = info.extensions[idx]
-                                FieldRow(
-                                    label: ext.name,
-                                    value: (ext.critical ? "[Critical] " : "") + ext.value
-                                )
-                            }
-                        }
-                    )
-                }
-            }
-            
-            // SANs
-            if !info.san.isEmpty {
-                InfoCard(title: "Subject Alternative Names") {
-                    AnyView(
-                        VStack(spacing: 4) {
-                            ForEach(info.san.indices, id: \.self) { idx in
-                                FieldRow(label: idx == 0 ? "SAN" : "", value: info.san[idx])
-                            }
-                        }
-                    )
-                }
-            }
-            
-            // Fingerprints
-            InfoCard(title: "Certificate Fingerprints") {
-                AnyView(
-                    VStack(spacing: 4) {
-                        FieldRow(label: "MD5", value: info.fingerprints.md5)
-                        FieldRow(label: "SHA-1", value: info.fingerprints.sha1)
-                        FieldRow(label: "SHA-256", value: info.fingerprints.sha256)
-                        FieldRow(label: "SPKI SHA256", value: info.fingerprints.spkiSha256)
-                    }
-                )
-            }
+        .onDisappear {
+            activeRequestID = nil
         }
-    }
-
-    @ViewBuilder
-    private func expiryBadge(daysRemaining: Int, expiryDate: Date) -> some View {
-        let color: Color = {
-            if daysRemaining < 0  { return .red }
-            if daysRemaining <= 7  { return .red }
-            if daysRemaining <= 30 { return .orange }
-            return .green
-        }()
-        let localTime: String = {
-            let f = DateFormatter()
-            f.dateStyle = .medium
-            f.timeStyle = .short
-            f.timeZone = .current
-            return f.string(from: expiryDate)
-        }()
-        let label: String = {
-            if daysRemaining < 0  { return "Expired \(abs(daysRemaining))d ago" }
-            if daysRemaining == 0 { return "Expires today" }
-            return "Expires in \(daysRemaining)d"
-        }()
-        HStack(spacing: 4) {
-            Image(systemName: "calendar.badge.clock")
-                .foregroundColor(color)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(label)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(color)
-                Text(localTime)
-                    .font(.system(size: 9))
-                    .foregroundColor(color.opacity(0.8))
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Capsule().fill(color.opacity(0.12)))
-    }
-
-    @ViewBuilder
-    private func certTypeBadge(_ certType: CertInfo.CertType) -> some View {
-        let (color, icon): (Color, String) = {
-            switch certType {
-            case .rootCA:         return (.purple, certType.icon)
-            case .intermediateCA: return (.orange, certType.icon)
-            case .leaf:           return (.blue,   certType.icon)
-            }
-        }()
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-                .foregroundColor(color)
-            Text(certType.label)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(color)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Capsule().fill(color.opacity(0.12)))
     }
     
     private func parseCert() {
+        guard !isLoading else { return }
+        let pem = inputPEM
+        let requestID = UUID()
+        activeRequestID = requestID
         isLoading = true
         error = nil
         certInfo = nil
+        validity = nil
         updateSessionResourceName([], [])
         
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let info = try CertService.shared.parseCertificate(pem: inputPEM)
+                let info = try CertService.shared.parseCertificate(pem: pem)
+                let dates = CertificateValidity(notBefore: info.notBefore, notAfter: info.notAfter)
                 DispatchQueue.main.async {
+                    guard self.activeRequestID == requestID else { return }
                     self.certInfo = info
+                    self.validity = dates
                     self.isLoading = false
+                    self.activeRequestID = nil
+                    self.inputExpanded = false
                     self.updateSessionResourceName(info.subject, info.san)
                 }
             } catch {
                 DispatchQueue.main.async {
+                    guard self.activeRequestID == requestID else { return }
                     self.error = error.localizedDescription
                     self.isLoading = false
+                    self.activeRequestID = nil
                 }
             }
         }
     }
-    
-    private func formatDate(_ iso: String) -> String {
-        guard let date = ISO8601DateFormatter().date(from: iso) else {
-            return iso
-        }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
+
+    private func reset() {
+        activeRequestID = nil
+        certInfo = nil
+        validity = nil
+        error = nil
+        isLoading = false
+        updateSessionResourceName([], [])
     }
 }
 
