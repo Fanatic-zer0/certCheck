@@ -34,14 +34,15 @@ struct CertInfo {
     var extensions: [CertExtension]
     var isCA: Bool
     var selfSigned: Bool
+    var extensionWarning: String? = nil
 
     enum CertType {
         case rootCA, intermediateCA, leaf
         var label: String {
             switch self {
-            case .rootCA:         return "Root CA"
-            case .intermediateCA: return "Intermediate CA"
-            case .leaf:           return "Leaf"
+            case .rootCA:         return "Root CA (Root Authority)"
+            case .intermediateCA: return "Intermediate CA (Subordinate Authority)"
+            case .leaf:           return "Leaf (End-Entity)"
             }
         }
         var icon: String {
@@ -68,6 +69,42 @@ struct CSRInfo {
     var sans: [String]
     var extensions: [CertExtension]
     var fingerprints: CertFingerprints
+}
+
+struct CertificateValidity {
+    enum Status: String {
+        case valid = "Within Validity Period"
+        case expired = "Expired"
+        case notYetValid = "Not Yet Valid"
+        case unknown = "Unknown Validity"
+    }
+
+    let notBefore: Date?
+    let notAfter: Date?
+    let notBeforeText: String
+    let notAfterText: String
+
+    init(notBefore: String, notAfter: String) {
+        let parser = ISO8601DateFormatter()
+        let fractionalParser = ISO8601DateFormatter()
+        fractionalParser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let start = parser.date(from: notBefore) ?? fractionalParser.date(from: notBefore)
+        let end = parser.date(from: notAfter) ?? fractionalParser.date(from: notAfter)
+        self.notBefore = start
+        self.notAfter = end
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .long
+        notBeforeText = start.map { formatter.string(from: $0) } ?? notBefore
+        notAfterText = end.map { formatter.string(from: $0) } ?? notAfter
+    }
+
+    func status(at date: Date) -> Status {
+        guard let notBefore, let notAfter, notBefore < notAfter else { return .unknown }
+        if date < notBefore { return .notYetValid }
+        if date >= notAfter { return .expired }
+        return .valid
+    }
 }
 
 struct TrustEntry: Identifiable {
