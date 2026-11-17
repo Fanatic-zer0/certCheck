@@ -132,6 +132,7 @@ struct ChainLink: Identifiable {
     var index: Int
     var subject: String
     var issuer: String
+    var notBefore: String
     var notAfter: String    // ISO 8601
     var selfSigned: Bool
     var issuerChainOk: Bool
