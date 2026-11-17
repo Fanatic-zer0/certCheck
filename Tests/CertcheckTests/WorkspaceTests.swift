@@ -109,6 +109,66 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertEqual(CertificateValidity(notBefore: "2027-01-01T00:00:00Z", notAfter: "2026-01-01T00:00:00Z").status(at: start), .unknown)
     }
 
+    func testCertificateGenerationRejectsInvalidLifetime() {
+        do {
+            _ = try CertService.shared.generateCertificate(
+                type: .selfSigned,
+                subject: CertSubject(cn: "invalid.example.test"),
+                keyAlgo: KeyAlgoConfig(),
+                validDays: 0,
+                caCertPEM: nil,
+                caKeyPEM: nil,
+                csrPEM: nil
+            )
+            preconditionFailure("Zero-day certificate lifetime was accepted")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "Validity must be a positive whole number of days.")
+        }
+    }
+
+    func testCSRTextParsing() {
+        let output = """
+        Certificate Request:
+            Subject: CN=csr.example.test, O=Certcheck QA
+            Subject Public Key Info:
+                Public Key Algorithm: ED25519
+                ED25519 Public-Key:
+                    pub:
+            Attributes:
+                Requested Extensions:
+                    X509v3 Subject Alternative Name:
+                        URI:https://example.test/a,b, DirName:/CN=Example, Inc/O=QA, DNS:api.example.test
+                    X509v3 Key Usage: critical
+                        Digital Signature, Key Encipherment
+            Signature Algorithm: ED25519
+        """
+        let info = OpenSSLHelper.shared.parseCSRText(output, der: Data([1, 2, 3]), signatureIsValid: true)
+        XCTAssertEqual(info.subject.map(\.key), ["CN", "O"])
+        XCTAssertEqual(info.subject.map(\.value), ["csr.example.test", "Certcheck QA"])
+        XCTAssertEqual(info.publicKey.type, "Ed25519")
+        XCTAssertEqual(info.publicKey.bits, 256)
+        XCTAssertEqual(info.signatureAlg, "ED25519")
+        XCTAssertEqual(info.selfSigValid, true)
+        XCTAssertEqual(info.sans, ["URI:https://example.test/a,b", "DirName:/CN=Example, Inc/O=QA", "DNS:api.example.test"])
+        XCTAssertEqual(info.extensions.count, 2)
+        XCTAssertEqual(info.extensions[0].value, "URI:https://example.test/a,b, DirName:/CN=Example, Inc/O=QA, DNS:api.example.test")
+        XCTAssertEqual(info.extensions[1].critical, true)
+        XCTAssertEqual(info.extensions[1].value, "Digital Signature, Key Encipherment")
+        XCTAssertEqual(info.fingerprints.md5.count, 47)
+        XCTAssertEqual(info.fingerprints.sha1.count, 59)
+        XCTAssertEqual(info.fingerprints.sha256.count, 95)
+
+        let ec = OpenSSLHelper.shared.parseCSRText("""
+        Subject: CN=ec.example.test
+            Public Key Algorithm: id-ecPublicKey
+                Public-Key: (256 bit)
+            Signature Algorithm: ecdsa-with-SHA256
+        """, der: Data([4, 5, 6]), signatureIsValid: false)
+        XCTAssertEqual(ec.publicKey.type, "EC")
+        XCTAssertEqual(ec.publicKey.bits, 256)
+        XCTAssertEqual(ec.selfSigValid, false)
+    }
+
     func testIndependentSessionsAndToolSelection() async {
         await MainActor.run {
             let workspace = Workspace()
@@ -200,9 +260,17 @@ struct WorkspaceCheck {
         await tests.testResourceNamesAndFallbacks()
         tests.testCertificateValidityBoundaries()
         tests.testCertificateExtensionCompleteness()
-        print("PASS: all 6 workspace and decoder tests")
+        tests.testCSRTextParsing()
+        tests.testCertificateGenerationRejectsInvalidLifetime()
+        print("PASS: all 8 workspace and decoder tests")
         if let path = ProcessInfo.processInfo.environment["CERTCHECK_DECODER_SAMPLE"] {
             try benchmarkAndRender(path: path)
+        }
+        if let paths = ProcessInfo.processInfo.environment["CERTCHECK_CSR_SAMPLES"] {
+            try verifyCSRFixtures(paths: paths.split(separator: ":").map(String.init))
+        }
+        if let paths = ProcessInfo.processInfo.environment["CERTCHECK_CHAIN_SAMPLES"] {
+            try verifyChainFixtures(paths: paths.split(separator: ":").map(String.init))
         }
     }
 
@@ -240,6 +308,78 @@ struct WorkspaceCheck {
             try data.write(to: output)
             print("Rendered \(output.path)")
         }
+    }
+
+    @MainActor
+    private static func verifyCSRFixtures(paths: [String]) throws {
+        for path in paths {
+            let pem = try String(contentsOfFile: path, encoding: .utf8)
+            let info = try OpenSSLHelper.shared.parseCSR(pem)
+            precondition(info.selfSigValid == true, "Valid CSR signature was not recognized: \(path)")
+            precondition(info.fingerprints.md5.count == 47 && info.fingerprints.sha1.count == 59 && info.fingerprints.sha256.count == 95,
+                         "CSR fingerprints missing: \(path)")
+            print("PASS: \(URL(fileURLWithPath: path).lastPathComponent), \(info.publicKey.type) \(info.publicKey.bits)-bit, \(info.sans.count) SANs")
+        }
+        if let path = paths.first {
+            let original = try String(contentsOfFile: path, encoding: .utf8)
+            let payload = original
+                .components(separatedBy: .newlines)
+                .filter { !$0.hasPrefix("-----") }
+                .joined()
+            var der = try Data(base64Encoded: payload).unwrap("Could not decode CSR fixture")
+            der[der.index(before: der.endIndex)] ^= 1
+            let base64 = der.base64EncodedString(options: .lineLength64Characters)
+            let tampered = "-----BEGIN CERTIFICATE REQUEST-----\n\(base64)\n-----END CERTIFICATE REQUEST-----\n"
+            let info = try OpenSSLHelper.shared.parseCSR(tampered)
+            precondition(info.selfSigValid == false, "Tampered CSR signature was accepted")
+            print("PASS: tampered CSR signature rejected")
+        }
+    }
+
+    @MainActor
+    private static func verifyChainFixtures(paths: [String]) throws {
+        precondition(paths.count == 2, "Expected leaf and root PEM paths")
+        let leaf = try String(contentsOfFile: paths[0], encoding: .utf8)
+        let root = try String(contentsOfFile: paths[1], encoding: .utf8)
+        let links = try CertService.shared.verifyChain(chainPEM: leaf + "\n" + root)
+        precondition(links.count == 2 && links.allSatisfy { $0.issuerChainOk && $0.signatureOk == true },
+                     "Valid chain was rejected")
+        precondition(links.allSatisfy { !$0.notBefore.isEmpty && !$0.notAfter.isEmpty },
+                     "Chain validity dates are missing")
+        let incomplete = try CertService.shared.verifyChain(chainPEM: leaf)
+        precondition(incomplete.count == 1 && !incomplete[0].issuerChainOk,
+                     "Incomplete chain was accepted")
+
+        let payload = leaf.components(separatedBy: .newlines)
+            .filter { !$0.hasPrefix("-----") }.joined()
+        var der = try Data(base64Encoded: payload).unwrap("Could not decode leaf fixture")
+        der[der.index(before: der.endIndex)] ^= 1
+        let tampered = "-----BEGIN CERTIFICATE-----\n\(der.base64EncodedString(options: .lineLength64Characters))\n-----END CERTIFICATE-----\n"
+        let invalid = try CertService.shared.verifyChain(chainPEM: tampered + "\n" + root)
+        precondition(invalid.count == 2 && !invalid[0].signatureOk!,
+                     "Tampered certificate signature was accepted")
+        do {
+            _ = try CertService.shared.checkBundleMembership(
+                certsPEM: leaf,
+                bundlePEM: root + "\n-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----"
+            )
+            preconditionFailure("Invalid bundle certificate was silently ignored")
+        } catch {
+            print("PASS: invalid bundle certificate reported")
+        }
+        print("PASS: valid chain, incomplete chain rejection, and invalid leaf signature")
+    }
+}
+#endif
+
+#if WORKSPACE_CHECK
+private extension Optional {
+    func unwrap(_ message: String) throws -> Wrapped {
+        guard let self else {
+            throw NSError(domain: "WorkspaceCheck", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: message])
+        }
+        return self
     }
 }
 #endif
