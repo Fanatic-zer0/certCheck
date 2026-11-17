@@ -205,7 +205,11 @@ struct Base64ConverterView: View {
         panel.nameFieldStringValue = "decoded\(suggestedExtension(for: data))"
         panel.allowedContentTypes = [.data]
         if panel.runModal() == .OK, let url = panel.url {
-            try? data.write(to: url)
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                self.error = "Could not save the decoded file: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -221,7 +225,7 @@ struct Base64ConverterView: View {
 
     private func detectKind(_ data: Data) -> String {
         if data.count >= 4 {
-            let magic = data.prefix(4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+            let magic = data.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
             if magic == 0xFEED_FEED { return "Java Keystore (JKS)" }
             if magic == 0xCECE_CECE { return "Java Keystore (JCEKS)" }
         }
@@ -229,7 +233,7 @@ struct Base64ConverterView: View {
             return "PEM Text"
         }
         if let first = data.first, first == 0x30 {
-            return "DER (PKCS#12 / PKCS#7 / X.509)"
+            return "DER / ASN.1 Data (PKCS#12, PKCS#7, or X.509)"
         }
         return "Binary Data"
     }
@@ -238,7 +242,7 @@ struct Base64ConverterView: View {
         switch detectKind(data) {
         case "Java Keystore (JKS)":   return ".jks"
         case "Java Keystore (JCEKS)": return ".jceks"
-        case "DER (PKCS#12 / PKCS#7 / X.509)": return ".p12"
+        case "DER / ASN.1 Data (PKCS#12, PKCS#7, or X.509)": return ".der"
         case "PEM Text":              return ".pem"
         default:                      return ".bin"
         }
