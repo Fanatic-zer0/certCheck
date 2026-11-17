@@ -168,17 +168,20 @@ struct CertDiffView: View {
 
             // Rows
             VStack(spacing: 0) {
-                diffRow("CN",            va(a.subject, "CN"),   va(b.subject, "CN"))
-                diffRow("Organization",  va(a.subject, "O"),    va(b.subject, "O"))
-                diffRow("Country",       va(a.subject, "C"),    va(b.subject, "C"))
-                diffRow("Issuer CN",     va(a.issuer, "CN"),    va(b.issuer, "CN"))
-                diffRow("Serial",        a.serial,              b.serial)
-                diffRow("Not Before",    fmtDate(a.notBefore),  fmtDate(b.notBefore))
-                diffRow("Not After",     fmtDate(a.notAfter),   fmtDate(b.notAfter))
-                diffRow("Key",           "\(a.publicKey.type) \(a.publicKey.bits)b", "\(b.publicKey.type) \(b.publicKey.bits)b")
-                diffRow("Sig Algorithm", a.signatureAlg,        b.signatureAlg)
-                diffRow("SANs",          a.san.joined(separator: ", "), b.san.joined(separator: ", "))
-                diffRow("SHA-256",       a.fingerprints.sha256, b.fingerprints.sha256)
+                diffRow("Subject", dnValue(a.subject), dnValue(b.subject))
+                diffRow("Issuer", dnValue(a.issuer), dnValue(b.issuer))
+                diffRow("Serial Number", a.serial, b.serial)
+                diffRow("Not Before", fmtDate(a.notBefore), fmtDate(b.notBefore))
+                diffRow("Not After", fmtDate(a.notAfter), fmtDate(b.notAfter))
+                diffRow("Version", "v\(a.version)", "v\(b.version)")
+                diffRow("Public Key", "\(a.publicKey.type) \(a.publicKey.bits) bits", "\(b.publicKey.type) \(b.publicKey.bits) bits")
+                diffRow("Signature Algorithm", a.signatureAlg, b.signatureAlg)
+                diffRow("Certificate Type", a.certType.label, b.certType.label)
+                diffRow("Subject Alternative Names", a.san.joined(separator: "\n"), b.san.joined(separator: "\n"))
+                ForEach(extensionNames(a, b), id: \.self) { name in
+                    diffRow("Extension: \(name)", extensionValue(name, in: a), extensionValue(name, in: b))
+                }
+                diffRow("SHA-256 Fingerprint", a.fingerprints.sha256, b.fingerprints.sha256)
             }
             .background(Color(nsColor: .controlBackgroundColor))
             .cornerRadius(8, corners: [.bottomLeft, .bottomRight])
@@ -202,7 +205,7 @@ struct CertDiffView: View {
                     .foregroundColor(matches ? .primary : .orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Divider().frame(height: 24)
 
@@ -211,7 +214,7 @@ struct CertDiffView: View {
                     .foregroundColor(matches ? .primary : .orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Image(systemName: matches ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                     .foregroundColor(matches ? Color.green.opacity(0.5) : .orange)
@@ -241,13 +244,25 @@ struct CertDiffView: View {
         }
     }
 
-    private func va(_ dn: OrderedDN, _ key: String) -> String {
-        dn.first(where: { $0.key == key })?.value ?? "—"
+    private func dnValue(_ dn: OrderedDN) -> String {
+        dn.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+    }
+
+    private func extensionNames(_ a: CertInfo, _ b: CertInfo) -> [String] {
+        Array(Set(a.extensions.map(\.name) + b.extensions.map(\.name))).sorted()
+    }
+
+    private func extensionValue(_ name: String, in info: CertInfo) -> String {
+        guard let item = info.extensions.first(where: { $0.name == name }) else { return "Not present" }
+        return (item.critical ? "Critical\n" : "") + item.value
     }
 
     private func fmtDate(_ iso: String) -> String {
         guard let d = ISO8601DateFormatter().date(from: iso) else { return iso }
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f.string(from: d)
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss 'UTC'"
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f.string(from: d)
     }
 }
 
@@ -324,7 +339,11 @@ struct CertConvertView: View {
         do {
             let derData = try OpenSSLHelper.shared.convertCertToDER(inputPEM)
             outputDER = derData.base64EncodedString(options: [.lineLength64Characters])
-            outputPKCS7 = (try? OpenSSLHelper.shared.convertCertToPKCS7(inputPEM)) ?? ""
+            do {
+                outputPKCS7 = try OpenSSLHelper.shared.convertCertToPKCS7(inputPEM)
+            } catch {
+                self.error = "DER conversion succeeded, but PKCS#7 conversion failed: \(error.localizedDescription)"
+            }
         } catch {
             self.error = error.localizedDescription
         }
