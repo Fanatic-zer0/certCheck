@@ -253,10 +253,11 @@ struct ChainVerifyView: View {
     @State private var error: String?
     
     private var overallValid: Bool {
-        !links.isEmpty && links.allSatisfy { link in
-            link.issuerChainOk &&
-            (link.signatureOk ?? true) &&
-            (ISO8601DateFormatter().date(from: link.notAfter).map { $0 >= Date() } ?? true)
+        let now = Date()
+        return !links.isEmpty && links.allSatisfy { link in
+            guard let notBefore = ISO8601DateFormatter().date(from: link.notBefore),
+                  let notAfter = ISO8601DateFormatter().date(from: link.notAfter) else { return false }
+            return link.issuerChainOk && link.signatureOk == true && notBefore <= now && notAfter >= now
         }
     }
     
@@ -268,6 +269,10 @@ struct ChainVerifyView: View {
                 
                 Text("Paste the full certificate chain (leaf first, then intermediates, then root CA)")
                     .font(.caption)
+                    .foregroundColor(.secondary)
+
+                Text("The final certificate is treated as the trust anchor for this check; system trust stores and revocation status are not checked.")
+                    .font(.caption2)
                     .foregroundColor(.secondary)
                 
                 VStack(alignment: .leading, spacing: 4) {
