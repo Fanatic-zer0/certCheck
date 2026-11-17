@@ -201,6 +201,11 @@ struct GenCertView: View {
     private var needsCSR: Bool {
         certType == .caSigned
     }
+
+    private var validDaysValue: Int? {
+        guard let days = Int(validDays), days > 0 else { return nil }
+        return days
+    }
     
     var body: some View {
         ScrollView {
@@ -254,6 +259,11 @@ struct GenCertView: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 80)
                 }
+                    if validDaysValue == nil {
+                        Text("Enter a positive whole number of valid days.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.red)
+                    }
                 
                 if needsCA {
                     PEMInputField(label: "CA Certificate (PEM)", placeholder: "-----BEGIN CERTIFICATE-----\n...", text: $caCertPEM)
@@ -268,7 +278,7 @@ struct GenCertView: View {
                     title: isGenerating ? "Generating..." : "Generate Certificate",
                     icon: "checkmark.shield.fill",
                     action: generate,
-                    disabled: isGenerating || (needsSubject && subject.cn.isEmpty)
+                    disabled: isGenerating || (needsSubject && subject.cn.isEmpty) || validDaysValue == nil
                 )
                 
                 if let error = error {
@@ -370,6 +380,10 @@ struct GenCertView: View {
     }
     
     private func generate() {
+        guard let validDays = validDaysValue else {
+            error = "Validity must be a positive whole number of days."
+            return
+        }
         isGenerating = true
         error = nil
         certOut = ""
@@ -381,7 +395,7 @@ struct GenCertView: View {
                     type: certType,
                     subject: needsSubject ? subject : nil,
                     keyAlgo: keyAlgo,
-                    validDays: Int(validDays) ?? 365,
+                    validDays: validDays,
                     caCertPEM: needsCA ? caCertPEM : nil,
                     caKeyPEM: needsCA ? caKeyPEM : nil,
                     csrPEM: needsCSR ? csrPEM : nil
@@ -507,7 +521,11 @@ struct ToPFXView: View {
         panel.allowedContentTypes = [.data]
         
         if panel.runModal() == .OK, let url = panel.url {
-            try? data.write(to: url)
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                self.error = "Could not save the PFX file: \(error.localizedDescription)"
+            }
         }
     }
 }
