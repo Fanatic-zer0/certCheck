@@ -96,42 +96,60 @@ class CertService {
     // MARK: - Chain Verification
     
     func verifyChain(chainPEM: String) throws -> [ChainLink] {
-        let certs = try splitPEMCerts(chainPEM).map { try pemToCertificate($0) }
+        let chainCertificates = try splitPEMCerts(chainPEM)
+        let certs = try chainCertificates.map { try pemToCertificate($0) }
         guard !certs.isEmpty else { throw CertError.noCertificates }
         
         var links: [ChainLink] = []
+        guard let rootPEM = chainCertificates.last else { throw CertError.noCertificates }
         
         for (index, cert) in certs.enumerated() {
             let subject = try extractDN(cert, key: kSecOIDX509V1SubjectName)
             let issuer = try extractDN(cert, key: kSecOIDX509V1IssuerName)
-            let (_, notAfter) = try extractValidity(cert)
+            let (notBefore, notAfter) = try extractValidity(cert)
             
             let subjectStr = dnToString(subject)
             let issuerStr = dnToString(issuer)
             let selfSigned = subjectStr == issuerStr
             
             // Check issuer chain
-            var issuerChainOk = selfSigned
-            if !selfSigned && index + 1 < certs.count {
+            let isLastCertificate = index == certs.count - 1
+            if !isLastCertificate {
                 let nextSubject = try extractDN(certs[index + 1], key: kSecOIDX509V1SubjectName)
-                issuerChainOk = issuerStr == dnToString(nextSubject)
+                let namesMatch = issuerStr == dnToString(nextSubject)
+                let intermediates = Array(chainCertificates.dropFirst(index + 1).dropLast())
+                let signatureOk = OpenSSLHelper.shared.verifyCertificateChainLink(
+                    certificate: chainCertificates[index],
+                    root: rootPEM,
+                    intermediates: intermediates
+                )
+                links.append(ChainLink(
+                    index: index,
+                    subject: subjectStr,
+                    issuer: issuerStr,
+                    notBefore: notBefore,
+                    notAfter: notAfter,
+                    selfSigned: selfSigned,
+                    issuerChainOk: namesMatch && signatureOk,
+                    signatureOk: signatureOk
+                ))
+                continue
             }
-            
-            // Verify signature
-            var signatureOk: Bool? = nil
-            if selfSigned {
-                signatureOk = verifySignature(cert: cert, issuerCert: cert)
-            } else if index + 1 < certs.count {
-                signatureOk = verifySignature(cert: cert, issuerCert: certs[index + 1])
-            }
+
+            let signatureOk = selfSigned && OpenSSLHelper.shared.verifyCertificateChainLink(
+                certificate: rootPEM,
+                root: rootPEM,
+                intermediates: []
+            )
             
             links.append(ChainLink(
                 index: index,
                 subject: subjectStr,
                 issuer: issuerStr,
+                notBefore: notBefore,
                 notAfter: notAfter,
                 selfSigned: selfSigned,
-                issuerChainOk: issuerChainOk,
+                issuerChainOk: signatureOk,
                 signatureOk: signatureOk
             ))
         }
@@ -158,8 +176,8 @@ class CertService {
         let bundlePEMs = try splitPEMCerts(bundlePEM)
         guard !bundlePEMs.isEmpty else { throw CertError.noCertificates }
 
-        let bundleEntries: [(index: Int, info: CertInfo)] = bundlePEMs.enumerated().compactMap { index, pem in
-            guard let info = try? parseCertificate(pem: pem) else { return nil }
+        let bundleEntries: [(index: Int, info: CertInfo)] = try bundlePEMs.enumerated().map { index, pem in
+            let info = try parseCertificate(pem: pem)
             return (index, info)
         }
 
@@ -205,7 +223,7 @@ class CertService {
         }
         // JKS check (magic 0xFEEDFEED)
         if data.count >= 4 {
-            let magic = data.prefix(4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+            let magic = data.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
             if magic == 0xFEEDFEED {
                 return try parseJKS(data)
             }
@@ -230,6 +248,10 @@ class CertService {
         caKeyPEM: String?,
         csrPEM: String?
     ) throws -> (cert: String, key: String) {
+        guard validDays > 0 else {
+            throw NSError(domain: "CertificateGeneration", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Validity must be a positive whole number of days."])
+        }
         switch type {
         case .selfSigned:
             return try generateSelfSigned(subject: subject!, keyAlgo: keyAlgo, validDays: validDays)
@@ -747,11 +769,6 @@ class CertService {
             throw CertError.extractionFailed
         }
         return data1 == data2
-    }
-    
-    private func verifySignature(cert: SecCertificate, issuerCert: SecCertificate) -> Bool {
-        // Would use SecTrustEvaluate or openssl verify
-        return true
     }
     
     private func parsePKCS12(_ data: Data, password: String?) throws -> [TrustEntry] {
