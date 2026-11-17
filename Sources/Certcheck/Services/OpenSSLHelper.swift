@@ -148,10 +148,20 @@ class OpenSSLHelper {
     
     func parseCSR(_ pem: String) throws -> CSRInfo {
         let output = try runCommand(["req", "-noout", "-text"], input: pem)
-        return try parseCSRText(output, pem: pem)
+        let der = try runCommandData(["req", "-outform", "DER"], input: pem)
+        let verification = try ProcessRunner.run(
+            executable: opensslPath,
+            arguments: ["req", "-verify", "-noout"],
+            stdin: pem.data(using: .utf8)
+        )
+        let verificationOutput = String(data: verification.stdout + verification.stderr, encoding: .utf8) ?? ""
+        let signatureIsValid = verification.exitCode == 0
+            && verificationOutput.localizedCaseInsensitiveContains("verify OK")
+            && !verificationOutput.localizedCaseInsensitiveContains("verify failure")
+        return parseCSRText(output, der: der, signatureIsValid: signatureIsValid)
     }
     
-    private func parseCSRText(_ text: String, pem: String) throws -> CSRInfo {
+    func parseCSRText(_ text: String, der: Data, signatureIsValid: Bool) -> CSRInfo {
         var subjectDN: OrderedDN = []
         var signatureAlgorithm = "Unknown"
         var publicKeyType = "Unknown"
@@ -178,16 +188,26 @@ class OpenSSLHelper {
 
             if line.hasPrefix("Public Key Algorithm:") {
                 let alg = String(line.dropFirst("Public Key Algorithm:".count)).trimmingCharacters(in: .whitespaces)
-                if alg.contains("rsaEncryption")  { publicKeyType = "RSA" }
-                else if alg.contains("ecPublicKey") || alg.contains("EC") { publicKeyType = "EC" }
-                else if alg.contains("Ed25519")   { publicKeyType = "Ed25519" }
+                let normalized = alg.lowercased()
+                if normalized.contains("rsa") { publicKeyType = "RSA" }
+                else if normalized.contains("ec") { publicKeyType = "EC" }
+                else if normalized.contains("ed25519") {
+                    publicKeyType = "Ed25519"
+                    publicKeySize = 256
+                } else if normalized.contains("ed448") {
+                    publicKeyType = "Ed448"
+                    publicKeySize = 456
+                }
                 else { publicKeyType = alg }
             }
 
-            if line.hasPrefix("Public-Key:"), let parenIdx = line.firstIndex(of: "(") {
+            if line.contains("Public-Key:"), let parenIdx = line.firstIndex(of: "(") {
                 let after = line[line.index(after: parenIdx)...]
                 if let spaceIdx = after.firstIndex(of: " ") {
-                    publicKeySize = Int(String(after[..<spaceIdx])) ?? publicKeySize
+                    let size = String(after[..<spaceIdx])
+                    if let bits = Int(size) {
+                        publicKeySize = bits
+                    }
                 }
             }
 
@@ -203,11 +223,12 @@ class OpenSSLHelper {
 
                 func saveCSRExt() {
                     guard !extName.isEmpty else { return }
-                    let val = extValueLines.map { $0.trimmingCharacters(in: .whitespaces) }
-                        .filter { !$0.isEmpty }.joined(separator: "\n")
+                    let valueIndent = extValueLines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                        .map { $0.prefix(while: { $0 == " " }).count }.min() ?? 0
+                    let val = extValueLines.map { String($0.dropFirst(valueIndent)) }
+                        .joined(separator: "\n")
                     if extName == "Subject Alternative Name" {
-                        sanList = val.components(separatedBy: ",")
-                            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                        sanList = parseCSRGeneralNames(val)
                     }
                     extensionsList.append(CertExtension(name: extName, critical: extCritical, value: val))
                     extName = ""; extCritical = false; extValueLines = []
@@ -233,7 +254,7 @@ class OpenSSLHelper {
                         if header.hasPrefix("X509v3 ") { header = String(header.dropFirst("X509v3 ".count)) }
                         extName = header; extCritical = critical
                     } else {
-                        extValueLines.append(extLine)
+                        extValueLines.append(extRaw)
                     }
                     i += 1
                 }
@@ -244,22 +265,30 @@ class OpenSSLHelper {
             i += 1
         }
 
-        // SHA-256 fingerprint of DER-encoded CSR
-        var fingerprints = CertFingerprints(md5: "", sha1: "", sha256: "", spkiSha256: "")
-        if let derData = try? runCommandData(["req", "-outform", "DER"], input: pem) {
-            let sha256 = SHA256.hash(data: derData).map { String(format: "%02X", $0) }.joined(separator: ":")
-            fingerprints = CertFingerprints(md5: "", sha1: "", sha256: sha256, spkiSha256: "")
-        }
+        let fingerprints = CertFingerprints(
+            md5: Insecure.MD5.hash(data: der).map { String(format: "%02X", $0) }.joined(separator: ":"),
+            sha1: Insecure.SHA1.hash(data: der).map { String(format: "%02X", $0) }.joined(separator: ":"),
+            sha256: SHA256.hash(data: der).map { String(format: "%02X", $0) }.joined(separator: ":"),
+            spkiSha256: ""
+        )
 
         return CSRInfo(
             subject: subjectDN,
             publicKey: PublicKeyInfo(type: publicKeyType, bits: publicKeySize),
             signatureAlg: signatureAlgorithm,
-            selfSigValid: nil,
+            selfSigValid: signatureIsValid,
             sans: sanList,
             extensions: extensionsList,
             fingerprints: fingerprints
         )
+    }
+
+    private func parseCSRGeneralNames(_ value: String) -> [String] {
+        let separators = #",\s*(?=(?:DNS|IP Address|IP|URI|email|DirName|othername|Registered ID|RID|X400Name|EdiPartyName):)"#
+        return value.replacingOccurrences(of: separators, with: "\n", options: .regularExpression)
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     // Regex-based subject parser — handles values with commas correctly
@@ -331,70 +360,24 @@ class OpenSSLHelper {
         return (match, detail)
     }
     
-    // MARK: - Chain Verification
-    
-    func verifyChain(certPEMs: [String], caBundle: String?) throws -> [ChainLink] {
-        var links: [ChainLink] = []
-        
-        for (index, certPEM) in certPEMs.enumerated() {
-            let subject = try runCommand(["x509", "-noout", "-subject"], input: certPEM)
-                .replacingOccurrences(of: "subject=", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let issuer = try runCommand(["x509", "-noout", "-issuer"], input: certPEM)
-                .replacingOccurrences(of: "issuer=", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let notAfter = try runCommand(["x509", "-noout", "-enddate"], input: certPEM)
-                .replacingOccurrences(of: "notAfter=", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            let selfSigned = subject == issuer
-            var issuerChainOk = selfSigned
-            var signatureOk: Bool? = nil
-            
-            // Try to verify with next cert or CA bundle
-            if index + 1 < certPEMs.count {
-                // Verify against next cert in chain
-                let nextCert = certPEMs[index + 1]
-                let tempCertFile = try writeSecureTempFile(certPEM)
-                let tempIssuerFile = try writeSecureTempFile(nextCert)
-                defer { removeTempFiles([tempCertFile, tempIssuerFile]) }
-                
-                do {
-                    _ = try runCommand(["verify", "-CAfile", tempIssuerFile.path, tempCertFile.path])
-                    signatureOk = true
-                    issuerChainOk = true
-                } catch {
-                    signatureOk = false
-                    issuerChainOk = false
-                }
-            } else if let caBundle = caBundle, !caBundle.isEmpty {
-                // Verify against CA bundle
-                let tempCertFile = try writeSecureTempFile(certPEM)
-                let tempCAFile = try writeSecureTempFile(caBundle)
-                defer { removeTempFiles([tempCertFile, tempCAFile]) }
-                
-                do {
-                    _ = try runCommand(["verify", "-CAfile", tempCAFile.path, tempCertFile.path])
-                    signatureOk = true
-                    issuerChainOk = true
-                } catch {
-                    signatureOk = false
-                    issuerChainOk = false
-                }
+    func verifyCertificateChainLink(certificate: String, root: String, intermediates: [String]) -> Bool {
+        do {
+            let certificateFile = try writeSecureTempFile(certificate)
+            let rootFile = try writeSecureTempFile(root)
+            var tempFiles = [certificateFile, rootFile]
+            var arguments = ["verify", "-CAfile", rootFile.path, "-check_ss_sig"]
+            if !intermediates.isEmpty {
+                let intermediatesFile = try writeSecureTempFile(intermediates.joined(separator: "\n"))
+                tempFiles.append(intermediatesFile)
+                arguments += ["-untrusted", intermediatesFile.path]
             }
-            
-            links.append(ChainLink(
-                index: index,
-                subject: subject,
-                issuer: issuer,
-                notAfter: notAfter,
-                selfSigned: selfSigned,
-                issuerChainOk: issuerChainOk,
-                signatureOk: signatureOk
-            ))
+            arguments.append(certificateFile.path)
+            defer { removeTempFiles(tempFiles) }
+            _ = try runCommand(arguments)
+            return true
+        } catch {
+            return false
         }
-        
-        return links
     }
     
     // MARK: - Generation Operations
