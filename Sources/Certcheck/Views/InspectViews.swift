@@ -71,6 +71,7 @@ struct CertDecodeView: View {
         }
         .onDisappear {
             activeRequestID = nil
+            isLoading = false
         }
     }
     
@@ -124,6 +125,8 @@ struct CSRDecodeView: View {
     @State private var inputPEM = ""
     @State private var csrInfo: CSRInfo?
     @State private var error: String?
+    @State private var isLoading = false
+    @State private var activeRequestID: UUID?
     
     var body: some View {
         ScrollView {
@@ -148,17 +151,22 @@ struct CSRDecodeView: View {
                 
                 HStack(spacing: 12) {
                     ActionButton(
-                        title: "Parse CSR",
+                        title: isLoading ? "Decoding..." : "Parse CSR",
                         icon: "magnifyingglass",
                         action: parseCSR,
-                        disabled: inputPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        disabled: isLoading || inputPEM.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     )
+
+                    if isLoading {
+                        ProgressView().controlSize(.small)
+                            .accessibilityLabel("Decoding CSR")
+                    }
                     
                     if let info = csrInfo {
                         HStack(spacing: 4) {
-                            Image(systemName: info.selfSigValid == true ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                                .foregroundColor(info.selfSigValid == true ? .green : .orange)
-                            Text(info.selfSigValid == true ? "Signature Valid" : "Signature Unverified")
+                            Image(systemName: signatureIcon(info.selfSigValid))
+                                .foregroundColor(signatureColor(info.selfSigValid))
+                            Text(signatureLabel(info.selfSigValid))
                                 .font(.system(size: 11, weight: .semibold))
                         }
                         .padding(.horizontal, 10)
@@ -181,7 +189,15 @@ struct CSRDecodeView: View {
             .padding()
         }
         .onChange(of: inputPEM) { _ in
+            activeRequestID = nil
+            csrInfo = nil
+            error = nil
+            isLoading = false
             updateSessionResourceName([], [])
+        }
+        .onDisappear {
+            activeRequestID = nil
+            isLoading = false
         }
     }
     
@@ -230,7 +246,7 @@ struct CSRDecodeView: View {
                         VStack(spacing: 4) {
                             ForEach(info.extensions.indices, id: \.self) { idx in
                                 let ext = info.extensions[idx]
-                                FieldRow(label: ext.name, value: ext.value)
+                                FieldRow(label: ext.critical ? "\(ext.name) (Critical)" : ext.name, value: ext.value)
                             }
                         }
                     )
@@ -250,22 +266,49 @@ struct CSRDecodeView: View {
     }
     
     private func parseCSR() {
+        guard !isLoading else { return }
+        let pem = inputPEM
+        let requestID = UUID()
+        activeRequestID = requestID
+        isLoading = true
         error = nil
         csrInfo = nil
         updateSessionResourceName([], [])
         
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let info = try CertService.shared.parseCSR(pem: inputPEM)
+                let info = try CertService.shared.parseCSR(pem: pem)
                 DispatchQueue.main.async {
+                    guard self.activeRequestID == requestID else { return }
                     self.csrInfo = info
+                    self.isLoading = false
+                    self.activeRequestID = nil
                     self.updateSessionResourceName(info.subject, info.sans)
                 }
             } catch {
                 DispatchQueue.main.async {
+                    guard self.activeRequestID == requestID else { return }
                     self.error = error.localizedDescription
+                    self.isLoading = false
+                    self.activeRequestID = nil
                 }
             }
         }
+    }
+
+    private func signatureLabel(_ isValid: Bool?) -> String {
+        switch isValid {
+        case .some(true): return "Signature Valid"
+        case .some(false): return "Signature Invalid"
+        case .none: return "Signature Not Checked"
+        }
+    }
+
+    private func signatureIcon(_ isValid: Bool?) -> String {
+        isValid == true ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+    }
+
+    private func signatureColor(_ isValid: Bool?) -> Color {
+        isValid == true ? .green : isValid == false ? .red : .orange
     }
 }
